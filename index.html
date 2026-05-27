@@ -6,10 +6,18 @@
 <title>SkinAI v2 | 皮肤病变智能监测系统</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;600;700&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script>
 // ═══════════════════════════════════════════════════════════════
 // 摄像头实时监测模块
 // ═══════════════════════════════════════════════════════════════
+// ═══ 提前声明全局常量（供 setLang 等函数提前使用）═══
+let SEV_LBL    = ['轻度','中度','重度'];
+let SEV_COL    = ['#10b981','#f59e0b','#ef4444'];
+let REG_LBL    = {face:'面部',arm:'手臂',back:'背部',leg:'腿部',hand:'手部',neck:'颈部'};
+let CAT_NAMES  = ['感染性','过敏/炎症','慢性/免疫','皮脂腺/痤疮','色素性','肿瘤性','其他'];
+let CAT_COLORS = ['#ef4444','#f59e0b','#8b5cf6','#f97316','#6b7280','#dc2626','#64748b'];
+
 let camStream = null;
 let camAutoTimer = null;
 let camAutoRunning = false;
@@ -426,10 +434,12 @@ function updateCamStats(elapsed) {
   document.getElementById('cs-time').textContent=camTotalTime?((camTotalTime/camFrames)/1000).toFixed(1)+'s':'—';
 }
 
-// ESC 关闭
-document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeCamModal(); });
-// 点击背景关闭
-document.getElementById('cam-modal').addEventListener('click', e=>{ if(e.target===document.getElementById('cam-modal')) closeCamModal(); });
+// ESC + 背景点击关闭（等DOM加载完成后绑定）
+document.addEventListener('DOMContentLoaded', () => {
+  document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeCamModal(); });
+  const camModal = document.getElementById('cam-modal');
+  if(camModal) camModal.addEventListener('click', e=>{ if(e.target===camModal) closeCamModal(); });
+});
 
 
 // ═══════════════════════════════════════════════════
@@ -497,6 +507,34 @@ const I18N = {
     fu_btn:'🔗 执行图像配准', fu_upload:'+ 上传随访图像',
     fu_sub:'上传复诊图像与基线对比，自动ORB特征点配准',
     snap_tip:'点击快照可恢复分析',
+    // patient form
+    pt_title:'👤 患者信息录入', pt_save:'✅ 保存患者信息', pt_cancel:'取消',
+    pt_name_required:'请填写患者姓名',
+    pt_sec_basic:'👤 基本信息', pt_sec_clinical:'🩺 临床信息', pt_sec_history:'⚕️ 过敏 & 病史',
+    pt_name:'姓名', pt_id:'病历号', pt_age:'年龄', pt_gender:'性别',
+    pt_gender_placeholder:'请选择', pt_male:'男', pt_female:'女', pt_gender_other:'其他',
+    pt_duration:'病变持续时间', pt_duration_placeholder:'例：3周、2个月',
+    pt_trend:'病变发展趋势', pt_trend_placeholder:'请选择',
+    trend_stable:'稳定', trend_worsening:'加重', trend_improving:'好转',
+    trend_fluctuating:'反复波动', trend_new:'新发',
+    pt_symptom:'主要症状', pt_symptom_multi:'可多选',
+    sym_itch:'瘙痒', sym_pain:'疼痛', sym_burn:'灼热感',
+    sym_bleed:'出血', sym_ooze:'渗出', sym_scale:'脱屑', sym_none:'无症状',
+    pt_prev_med:'既往用药', pt_prev_med_placeholder:'例：糠酸莫米松乳膏、他克莫司软膏等',
+    pt_allergy:'已知过敏史', pt_allergy_placeholder:'例：青霉素、磺胺类',
+    pt_family:'皮肤病家族史',
+    family_none:'无', family_eczema:'湿疹/特应性皮炎', family_psoriasis:'银屑病',
+    family_cancer:'皮肤肿瘤', family_other:'其他',
+    pt_comorbid:'合并基础疾病', pt_comorbid_placeholder:'例：糖尿病、免疫抑制状态',
+    pt_fitz:'Fitzpatrick 肤色分型', pt_fitz_placeholder:'未指定',
+    pt_fitz_1:'I型 – 极白，总是灼伤', pt_fitz_2:'II型 – 白，经常灼伤',
+    pt_fitz_3:'III型 – 中等，有时灼伤', pt_fitz_4:'IV型 – 橄榄色，很少灼伤',
+    pt_fitz_5:'V型 – 棕色，极少灼伤', pt_fitz_6:'VI型 – 深棕/黑，从不灼伤',
+    pt_notes:'备注 / 其他', pt_notes_placeholder:'其他临床备注、患者主诉等…',
+    gender_male:'男', gender_female:'女', gender_other:'其他',
+    // care education
+    care_edu_title:'🩹 治疗护理宣教',
+    care_edu_btn:'查看护理宣教',
   },
   en: {
     subtitle:   'Skin Lesion AI Monitoring · EfficientNetV2-M + GradCAM + EASI Score',
@@ -553,6 +591,34 @@ const I18N = {
     fu_btn:'🔗 Run Registration', fu_upload:'+ Upload Follow-up',
     fu_sub:'Upload follow-up image for ORB feature-point registration',
     snap_tip:'Click snapshot to restore analysis',
+    // patient form
+    pt_title:'👤 Patient Information', pt_save:'✅ Save Patient Info', pt_cancel:'Cancel',
+    pt_name_required:'Please enter patient name',
+    pt_sec_basic:'👤 Basic Info', pt_sec_clinical:'🩺 Clinical Info', pt_sec_history:'⚕️ Allergy & History',
+    pt_name:'Name', pt_id:'Medical Record No.', pt_age:'Age', pt_gender:'Gender',
+    pt_gender_placeholder:'Select', pt_male:'Male', pt_female:'Female', pt_gender_other:'Other',
+    pt_duration:'Lesion Duration', pt_duration_placeholder:'e.g. 3 weeks, 2 months',
+    pt_trend:'Lesion Trend', pt_trend_placeholder:'Select',
+    trend_stable:'Stable', trend_worsening:'Worsening', trend_improving:'Improving',
+    trend_fluctuating:'Fluctuating', trend_new:'New onset',
+    pt_symptom:'Main Symptoms', pt_symptom_multi:'Multi-select',
+    sym_itch:'Itch', sym_pain:'Pain', sym_burn:'Burning',
+    sym_bleed:'Bleeding', sym_ooze:'Exudate', sym_scale:'Scaling', sym_none:'Asymptomatic',
+    pt_prev_med:'Previous Medications', pt_prev_med_placeholder:'e.g. mometasone furoate cream, tacrolimus ointment',
+    pt_allergy:'Known Allergies', pt_allergy_placeholder:'e.g. penicillin, sulfonamides',
+    pt_family:'Family Skin History',
+    family_none:'None', family_eczema:'Eczema / Atopic dermatitis', family_psoriasis:'Psoriasis',
+    family_cancer:'Skin tumor', family_other:'Other',
+    pt_comorbid:'Comorbidities', pt_comorbid_placeholder:'e.g. diabetes, immunosuppression',
+    pt_fitz:'Fitzpatrick Skin Type', pt_fitz_placeholder:'Not specified',
+    pt_fitz_1:'Type I – Very fair, always burns', pt_fitz_2:'Type II – Fair, often burns',
+    pt_fitz_3:'Type III – Medium, sometimes burns', pt_fitz_4:'Type IV – Olive, rarely burns',
+    pt_fitz_5:'Type V – Brown, very rarely burns', pt_fitz_6:'Type VI – Dark, never burns',
+    pt_notes:'Notes / Other', pt_notes_placeholder:'Additional clinical notes, patient complaints…',
+    gender_male:'Male', gender_female:'Female', gender_other:'Other',
+    // care education
+    care_edu_title:'🩹 Care & Treatment Education',
+    care_edu_btn:'View Care Education',
   },
   ko: {
     subtitle:   '피부 병변 AI 모니터링 · EfficientNetV2-M + GradCAM + EASI 점수',
@@ -609,6 +675,34 @@ const I18N = {
     fu_btn:'🔗 이미지 등록 실행', fu_upload:'+ 추적 이미지 업로드',
     fu_sub:'재진 이미지를 업로드하여 ORB 특징점 기반 등록',
     snap_tip:'스냅샷을 클릭하면 분석 복원',
+    // patient form
+    pt_title:'👤 환자 정보 입력', pt_save:'✅ 환자 정보 저장', pt_cancel:'취소',
+    pt_name_required:'환자 이름을 입력해주세요',
+    pt_sec_basic:'👤 기본 정보', pt_sec_clinical:'🩺 임상 정보', pt_sec_history:'⚕️ 알레르기 & 병력',
+    pt_name:'이름', pt_id:'의무 기록 번호', pt_age:'나이', pt_gender:'성별',
+    pt_gender_placeholder:'선택', pt_male:'남성', pt_female:'여성', pt_gender_other:'기타',
+    pt_duration:'병변 지속 기간', pt_duration_placeholder:'예: 3주, 2개월',
+    pt_trend:'병변 경과', pt_trend_placeholder:'선택',
+    trend_stable:'안정', trend_worsening:'악화', trend_improving:'호전',
+    trend_fluctuating:'반복', trend_new:'신규 발생',
+    pt_symptom:'주요 증상', pt_symptom_multi:'복수 선택 가능',
+    sym_itch:'가려움', sym_pain:'통증', sym_burn:'작열감',
+    sym_bleed:'출혈', sym_ooze:'삼출', sym_scale:'인설', sym_none:'무증상',
+    pt_prev_med:'이전 약물', pt_prev_med_placeholder:'예: 모메타손 크림, 타크로리무스 연고',
+    pt_allergy:'알려진 알레르기', pt_allergy_placeholder:'예: 페니실린, 설폰아미드',
+    pt_family:'가족 피부 병력',
+    family_none:'없음', family_eczema:'습진/아토피 피부염', family_psoriasis:'건선',
+    family_cancer:'피부 종양', family_other:'기타',
+    pt_comorbid:'동반 질환', pt_comorbid_placeholder:'예: 당뇨병, 면역억제 상태',
+    pt_fitz:'Fitzpatrick 피부 유형', pt_fitz_placeholder:'미지정',
+    pt_fitz_1:'I형 – 매우 흰색, 항상 타버림', pt_fitz_2:'II형 – 흰색, 자주 타버림',
+    pt_fitz_3:'III형 – 중간, 때로 타버림', pt_fitz_4:'IV형 – 올리브색, 거의 안 타버림',
+    pt_fitz_5:'V형 – 갈색, 매우 드물게 타버림', pt_fitz_6:'VI형 – 짙은 갈색/검정, 타지 않음',
+    pt_notes:'비고 / 기타', pt_notes_placeholder:'기타 임상 메모, 환자 주소…',
+    gender_male:'남성', gender_female:'여성', gender_other:'기타',
+    // care education
+    care_edu_title:'🩹 치료 간호 교육',
+    care_edu_btn:'간호 교육 보기',
   }
 };
 
@@ -678,6 +772,86 @@ function setLang(lang) {
   // update no-records row
   const ph = document.querySelector('#rtbody td[colspan]');
   if(ph) ph.textContent = I18N[lang].no_records;
+
+}
+
+function updatePatientModalLang(lang) {
+  const L = I18N[lang];
+  if (!L) return;
+  // modal title
+  const pmTitle = document.querySelector('#pm-header h2');
+  if (pmTitle) pmTitle.innerHTML = L.pt_title || pmTitle.innerHTML;
+  // section headers
+  const secs = document.querySelectorAll('.fm-section');
+  const secKeys = ['pt_sec_basic','pt_sec_clinical','pt_sec_history'];
+  secs.forEach((el, i) => { if (L[secKeys[i]]) el.textContent = L[secKeys[i]]; });
+  // labels
+  const labelMap = {
+    'pt-name': 'pt_name', 'pt-id': 'pt_id', 'pt-age': 'pt_age',
+    'pt-gender': 'pt_gender', 'pt-duration': 'pt_duration', 'pt-trend': 'pt_trend',
+    'pt-symptom': 'pt_symptom', 'pt-prev-med': 'pt_prev_med',
+    'pt-allergy': 'pt_allergy', 'pt-family': 'pt_family',
+    'pt-comorbid': 'pt_comorbid', 'pt-fitz': 'pt_fitz', 'pt-notes': 'pt_notes'
+  };
+  Object.entries(labelMap).forEach(([id, key]) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const label = el.closest ? el.closest('.fm-group')?.querySelector('.fm-label') : null;
+    if (label && L[key]) label.textContent = L[key];
+    // update placeholder
+    if (L[key+'_placeholder']) el.placeholder = L[key+'_placeholder'];
+  });
+  // gender options
+  const gSel = document.getElementById('pt-gender');
+  if (gSel) {
+    const opts = gSel.options;
+    if (opts[0]) opts[0].text = L.pt_gender_placeholder || opts[0].text;
+    if (opts[1]) opts[1].text = L.pt_male || opts[1].text;
+    if (opts[2]) opts[2].text = L.pt_female || opts[2].text;
+    if (opts[3]) opts[3].text = L.pt_gender_other || opts[3].text;
+  }
+  // trend options
+  const tSel = document.getElementById('pt-trend');
+  if (tSel) {
+    const tMap = ['','stable','worsening','improving','fluctuating','new'];
+    Array.from(tSel.options).forEach((o,i) => {
+      if (i === 0) { o.text = L.pt_trend_placeholder || o.text; return; }
+      const k = 'trend_' + tMap[i];
+      if (L[k]) o.text = L[k];
+    });
+  }
+  // symptom options
+  const sSel = document.getElementById('pt-symptom');
+  if (sSel) {
+    const syms = ['itch','pain','burn','bleed','ooze','scale','none'];
+    Array.from(sSel.options).forEach((o, i) => {
+      const k = 'sym_' + syms[i];
+      if (L[k]) o.text = L[k];
+    });
+  }
+  // family options
+  const fSel = document.getElementById('pt-family');
+  if (fSel) {
+    const fMap = ['none','eczema','psoriasis','cancer','other'];
+    Array.from(fSel.options).forEach((o, i) => {
+      const k = 'family_' + fMap[i];
+      if (L[k]) o.text = L[k];
+    });
+  }
+  // fitz options
+  const fzSel = document.getElementById('pt-fitz');
+  if (fzSel) {
+    const fzKeys = ['pt_fitz_placeholder','pt_fitz_1','pt_fitz_2','pt_fitz_3','pt_fitz_4','pt_fitz_5','pt_fitz_6'];
+    Array.from(fzSel.options).forEach((o, i) => { if (L[fzKeys[i]]) o.text = L[fzKeys[i]]; });
+  }
+  // save/cancel buttons
+  const saveBtn = document.querySelector('#pm-footer .btn-p');
+  if (saveBtn && L.pt_save) saveBtn.innerHTML = L.pt_save;
+  const cancelBtn = document.querySelector('#pm-footer .btn-o');
+  if (cancelBtn && L.pt_cancel) cancelBtn.textContent = L.pt_cancel;
+  // multi-select hint
+  const multiHint = document.querySelector('#pt-symptom + span');
+  if (multiHint && L.pt_symptom_multi) multiHint.textContent = L.pt_symptom_multi;
 }
 
 function updateCamLang(lang) {
@@ -761,6 +935,7 @@ let patientData = null;
 function openPatientModal() {
   document.getElementById('patient-modal').classList.add('open');
   document.body.style.overflow = 'hidden';
+  updatePatientModalLang(currentLang);
   // 如果已有数据，填回表单
   if (patientData) {
     document.getElementById('pt-name').value      = patientData.name || '';
@@ -788,13 +963,36 @@ function closePatientModal() {
 
 function savePatient() {
   const name = document.getElementById('pt-name').value.trim();
-  if (!name) { alert('请填写患者姓名'); return; }
+  const L = I18N[currentLang];
+  if (!name) { alert(L.pt_name_required || '请填写患者姓名'); return; }
   const sel = document.getElementById('pt-symptom');
   const symptoms = Array.from(sel.selectedOptions).map(o => o.value);
-  const symLabels = {itch:'瘙痒',pain:'疼痛',burn:'灼热感',bleed:'出血',ooze:'渗出',scale:'脱屑',none:'无症状'};
-  const trendLabels = {stable:'稳定',worsening:'加重',improving:'好转',fluctuating:'反复波动',new:'新发'};
-  const genderLabels = {male:'男',female:'女',other:'其他'};
-  const familyLabels = {none:'无',eczema:'湿疹/特应性皮炎',psoriasis:'银屑病',cancer:'皮肤肿瘤',other:'其他'};
+  // Use current language labels
+  const symLabels = {
+    itch:  (L.sym_itch  || '瘙痒'),  pain:  (L.sym_pain  || '疼痛'),
+    burn:  (L.sym_burn  || '灼热感'), bleed: (L.sym_bleed || '出血'),
+    ooze:  (L.sym_ooze  || '渗出'),  scale: (L.sym_scale || '脱屑'),
+    none:  (L.sym_none  || '无症状')
+  };
+  const trendLabels = {
+    stable:      (L.trend_stable      || '稳定'),
+    worsening:   (L.trend_worsening   || '加重'),
+    improving:   (L.trend_improving   || '好转'),
+    fluctuating: (L.trend_fluctuating || '反复波动'),
+    new:         (L.trend_new         || '新发')
+  };
+  const genderLabels = {
+    male:   (L.gender_male   || '男'),
+    female: (L.gender_female || '女'),
+    other:  (L.gender_other  || '其他')
+  };
+  const familyLabels = {
+    none:      (L.family_none      || '无'),
+    eczema:    (L.family_eczema    || '湿疹/特应性皮炎'),
+    psoriasis: (L.family_psoriasis || '银屑病'),
+    cancer:    (L.family_cancer    || '皮肤肿瘤'),
+    other:     (L.family_other     || '其他')
+  };
 
   patientData = {
     name,
@@ -829,8 +1027,7 @@ ${patientData.id}`;
 病程：${patientData.duration}`;
   if (patientData.symLabels !== '无') meta += `
 症状：${patientData.symLabels}`;
-  document.getElementById('pt-meta-display').innerHTML = meta.replace(/
-/g, '<br>');
+  document.getElementById('pt-meta-display').innerHTML = meta.replace(/\n/g, '<br>');
 
   closePatientModal();
 }
@@ -932,10 +1129,7 @@ AI检测结果：
       model: 'claude-sonnet-4-20250514',
       max_tokens: 2000,
       system: sys,
-      messages: [{ role:'user', content: ptInfo + '
-' + diseaseInfo + '
-
-请生成完整处置方案，返回JSON。' }]
+      messages: [{ role:'user', content: ptInfo + '\n' + diseaseInfo + '\n\n请生成完整处置方案，返回JSON。' }]
     })
   });
   const data = await resp.json();
@@ -1158,20 +1352,195 @@ function renderRx(rx) {
     `<span style="color:${lastR?.color||'#10b981'};font-weight:700">${lastR?.diseaseName||'正常'}</span>　${SEV_LBL[lastR?.severity||0]}　EASI: ${lastR?.easiTotal||0}`;
 }
 
-// 检测完成后自动触发方案预生成
-const _origFinish = finishAnalysis;
-function finishAnalysis(r, elapsed) {
-  _origFinish(r, elapsed);
+// ═══════════════════════════════════════════════════════════════
+// 治疗护理宣教模块
+// ═══════════════════════════════════════════════════════════════
+let currentCareEdu = null;
+
+function openCareEduModal() {
+  document.getElementById('care-edu-modal').style.display = 'block';
+  document.body.style.overflow = 'hidden';
+  if (currentCareEdu) {
+    renderCareEdu(currentCareEdu);
+  } else if (lastR) {
+    generateCareEdu();
+  }
+}
+function closeCareEduModal() {
+  document.getElementById('care-edu-modal').style.display = 'none';
+  document.body.style.overflow = '';
+}
+
+async function generateCareEdu() {
+  if (!lastR) { alert('请先完成AI检测'); return; }
+  document.getElementById('care-edu-modal').style.display = 'block';
+  document.body.style.overflow = 'hidden';
+  document.getElementById('ce-loading').style.display = 'flex';
+  document.getElementById('ce-content').style.display = 'none';
+  try {
+    const edu = await callClaudeCareEdu(lastR, patientData);
+    currentCareEdu = edu;
+    renderCareEdu(edu);
+  } catch(e) {
+    currentCareEdu = simulateCareEdu(lastR, patientData);
+    renderCareEdu(currentCareEdu);
+  }
+}
+
+async function callClaudeCareEdu(result, patient) {
+  const L = I18N[currentLang];
+  const ptInfo = patient ?
+    `患者：${patient.name}，${patient.age||'?'}岁，${patient.genderLabel||''}。病程：${patient.duration||'未知'}。症状：${patient.symLabels||'无'}。过敏史：${patient.allergy||'无'}。合并症：${patient.comorbid||'无'}。Fitzpatrick分型：${patient.fitz||'未指定'}。`
+    : '患者信息未录入。';
+  const resInfo = `诊断：${result.diseaseName||'正常'}，严重度：${SEV_LBL[result.severity||0]}，EASI：${result.easiTotal||0}/72，风险：${result.risk||'low'}。`;
+
+  const lang = currentLang === 'en' ? 'English' : currentLang === 'ko' ? '한국어' : '中文';
+  const sys = `你是皮肤科护理宣教专家。根据诊断和患者信息，用${lang}生成详细的个性化护理宣教材料。
+返回纯JSON（无Markdown），结构：
+{
+  "dailyCare": ["<护理要点1>","<护理要点2>",...],
+  "avoidItems": ["<禁忌1>","<禁忌2>",...],
+  "medicationGuide": ["<用药指导1>","<用药指导2>",...],
+  "lifestyle": ["<饮食/生活1>","<饮食/生活2>",...],
+  "followupReminder": ["<复查1>","<复查2>",...],
+  "psychSupport": ["<心理/自我管理1>","<心理/自我管理2>",...],
+  "redFlags": ["<紧急症状1>","<紧急症状2>",...]
+}`;
+
+  const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type':'application/json','anthropic-dangerous-direct-browser-calls':'true' },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514', max_tokens: 1500, system: sys,
+      messages: [{ role:'user', content: ptInfo + '\n' + resInfo + '\n请生成护理宣教材料，返回JSON。' }]
+    })
+  });
+  const data = await resp.json();
+  if (data.error) throw new Error(data.error.message);
+  const txt = data.content?.find(c=>c.type==='text')?.text||'';
+  return JSON.parse(txt.replace(/^```(?:json)?\s*/m,'').replace(/\s*```\s*$/m,'').trim());
+}
+
+function simulateCareEdu(r, pt) {
+  const key = r.diseaseKey||'normal';
+  const isDis = r.diagnosis === 'disease';
+  const sev = r.severity || 0;
+  const isCancer = ['melanoma','bcc','scc'].includes(key);
+  const isEczema = ['eczema','atopic_dermatitis','contact_dermatitis'].includes(key);
+  const isAcne = key.includes('acne') || key === 'rosacea';
+  const isFungal = ['tinea_corporis','tinea_cruris','tinea_pedis','onychomycosis','candidiasis'].includes(key);
+
+  return {
+    dailyCare: isDis ? [
+      '使用温和无皂基洁肤产品，水温建议37°C以下，避免热水',
+      '沐浴后3分钟内涂抹保湿产品锁住水分',
+      '选择纯棉宽松透气衣物，减少皮肤摩擦和刺激',
+      ...(isEczema ? ['每日至少保湿2次，急性期可增加至4-6次'] : []),
+      ...(isAcne ? ['避免挤压或刺破粉刺，会导致继发感染和瘢痕'] : []),
+      ...(isFungal ? ['保持患处干燥，用毛巾轻拍而非摩擦擦干'] : []),
+      '日间做好防晒，建议SPF30以上防晒霜',
+    ] : ['维持日常温和清洁，使用保湿产品锁水', '保持皮肤清洁干燥，每日检查皮肤状态'],
+    avoidItems: [
+      '避免抓挠、揉搓或摩擦患处',
+      '避免使用含酒精、香精、防腐剂的护肤品',
+      ...(pt?.allergy ? [`严格避免含${pt.allergy}成分的产品`] : []),
+      ...(isEczema ? ['避免羊毛、合成纤维等刺激性衣料'] : []),
+      ...(isAcne ? ['避免使用厚重粉底或不透气的化妆品'] : []),
+      ...(isCancer ? ['禁止自行处理、切除或灼烧病变'] : ['避免长时间日晒，户外佩戴防护衣帽']),
+      ...(key==='rosacea' ? ['避免辛辣食物、酒精、极端温度变化'] : []),
+    ],
+    medicationGuide: isDis ? [
+      '按处方剂量和疗程用药，不可自行停药',
+      '外用药膏应薄涂均匀，每次用量不超过一个指尖单位（FTU）',
+      ...(isEczema ? ['激素类药膏应避免连续使用超过2周，如需长期使用请咨询医师'] : []),
+      ...(isAcne ? ['维甲酸类药物使用期间尤其注意防晒'] : []),
+      '如出现用药后皮肤明显刺激、红肿加重，请停药并咨询医师',
+      '不同药物的涂抹顺序：先水剂→后乳液→最后膏剂',
+    ] : ['暂无处方用药，如症状出现或加重请及时就诊'],
+    lifestyle: [
+      ...(isAcne ? ['减少高糖、高油、乳制品摄入，增加蔬菜水果','保持充足睡眠（7-8小时），避免熬夜'] : ['均衡饮食，多摄入富含维生素的新鲜蔬果']),
+      ...(isEczema ? ['游泳后立即用清水冲洗，并补充保湿产品'] : []),
+      ...(isFungal ? ['避免共用毛巾、鞋袜等个人用品','穿宽松透气的鞋袜，勤更换袜子'] : []),
+      ...(pt?.comorbid?.includes('糖尿病') ? ['糖尿病患者注意控制血糖，有助于皮肤愈合'] : []),
+      '保持规律作息，避免过度劳累和精神紧张',
+      '每天保证充足饮水（1500-2000ml）',
+    ],
+    followupReminder: [
+      isCancer ? '立即前往皮肤肿瘤科就诊，勿延误' :
+        sev >= 2 ? '1周内至皮肤科专科复诊' : '2-4周后复诊，评估治疗效果',
+      '复诊前拍摄清晰对比照片记录病灶变化',
+      '记录用药情况和症状变化，复诊时如实告知医师',
+      ...(isEczema ? ['建议记录病情日记，追踪可能的诱发因素'] : []),
+      '按时完成全疗程，不可因症状改善而自行停诊',
+    ],
+    psychSupport: [
+      '皮肤病可能影响外貌，出现焦虑或自卑情绪是正常的',
+      '积极情绪有助于免疫功能，进而促进皮肤康复',
+      '可加入患者社群，与有相同经历的病友分享经验',
+      '如心理压力影响日常生活，可寻求心理咨询师帮助',
+      '了解疾病知识，避免不必要的恐惧和误区',
+    ],
+    redFlags: [
+      ...(isCancer ? ['病灶快速增大或形态改变','出现溃疡、出血不止'] : []),
+      '皮疹迅速扩散至全身或伴有发热',
+      '患处出现化脓、红肿热痛等感染迹象',
+      '严重瘙痒或疼痛影响睡眠',
+      ...(pt?.comorbid?.includes('糖尿病') ? ['伤口超过1周不愈合'] : []),
+      '用药后出现严重过敏反应（呼吸困难、大面积荨麻疹）',
+    ].filter(Boolean)
+  };
+}
+
+function renderCareEdu(edu) {
+  document.getElementById('ce-loading').style.display = 'none';
+  document.getElementById('ce-content').style.display = 'block';
+
+  // disease banner
+  const r = lastR;
+  if (r) {
+    document.getElementById('ce-disease-name').textContent = r.diseaseName || '正常皮肤';
+    document.getElementById('ce-disease-sub').textContent =
+      `${SEV_LBL[r.severity||0]} · 置信度 ${Math.round((r.conf||0)*100)}% · 风险：${r.risk||'low'}`;
+    document.getElementById('ce-easi-val').textContent = (r.easiTotal||0)+'/72';
+    const icons = {melanoma:'🔴',bcc:'🔴',scc:'🔴',eczema:'🟡',psoriasis:'🟠',acne_papulopustular:'🟠',normal:'✅'};
+    document.getElementById('ce-disease-icon').textContent = icons[r.diseaseKey] || '🩺';
+  }
+
+  const toHtml = arr => (arr||[]).map(s=>`<div style="margin-bottom:5px">• ${s}</div>`).join('');
+  document.getElementById('ce-daily-care').innerHTML  = toHtml(edu.dailyCare);
+  document.getElementById('ce-avoid').innerHTML       = toHtml(edu.avoidItems);
+  document.getElementById('ce-med-guide').innerHTML   = toHtml(edu.medicationGuide);
+  document.getElementById('ce-lifestyle').innerHTML   = toHtml(edu.lifestyle);
+  document.getElementById('ce-followup').innerHTML    = toHtml(edu.followupReminder);
+  document.getElementById('ce-psych').innerHTML       = toHtml(edu.psychSupport);
+  document.getElementById('ce-redflags').innerHTML    = toHtml(edu.redFlags);
+
+  // update entry card preview
+  document.getElementById('care-edu-card').style.display = 'block';
+  document.getElementById('care-edu-preview').innerHTML =
+    `<span style="color:#059669;font-weight:700">${lastR?.diseaseName||'正常'}</span> · ${SEV_LBL[lastR?.severity||0]} · 点击查看详细宣教`;
+}
+
+// 检测完成后的附加操作（由 finishAnalysis 末尾调用）
+function postAnalysisHook(r) {
   // 显示处置方案入口
   document.getElementById('rx-entry-card').style.display = 'block';
   document.getElementById('rx-preview').innerHTML =
     `<span style="color:${r.color};font-weight:700">${r.diseaseName||'正常'}</span>　${SEV_LBL[r.severity||0]}　EASI: ${r.easiTotal||0}<br>
      <span style="color:var(--text3);font-size:10px">点击查看完整处置方案</span>`;
+  // 显示护理宣教入口
+  document.getElementById('care-edu-card').style.display = 'block';
+  document.getElementById('care-edu-preview').innerHTML =
+    `<span style="color:#059669;font-weight:700">${r.diseaseName||'正常'}</span> · ${SEV_LBL[r.severity||0]}<br>
+     <span style="color:var(--text3);font-size:10px">点击查看护理宣教材料</span>`;
   // 后台预生成方案（不打开模态框）
   callClaudeRx(r, patientData).then(rx=>{ currentRx=rx; }).catch(()=>{ currentRx=simulateRx(r,patientData); });
+  // 后台预生成护理宣教
+  callClaudeCareEdu(r, patientData).then(edu=>{ currentCareEdu=edu; }).catch(()=>{ currentCareEdu=simulateCareEdu(r,patientData); });
 }
 
 </script>
+<!-- styles -->
 <style>
 :root {
   --navy:      #071428;
@@ -1932,6 +2301,15 @@ tr:hover td{background:var(--bg)}
         </button>
       </div>
 
+      <!-- 治疗护理宣教 -->
+      <div class="card" id="care-edu-card" style="display:none;background:linear-gradient(135deg,#f0fdf4,#dcfce7);border-color:#10b981">
+        <h5 style="color:#065f46" data-i18n="care_edu_title">🩹 治疗护理宣教</h5>
+        <div id="care-edu-preview" style="font-size:11px;color:var(--text3);margin-bottom:8px">根据病灶诊断生成个性化护理宣教</div>
+        <button class="btn btn-w" onclick="openCareEduModal()" style="font-size:12px;background:linear-gradient(135deg,#059669,#10b981);color:#fff;font-weight:700">
+          🩹 查看护理宣教
+        </button>
+      </div>
+
       <!-- Registration result -->
       <div class="card" id="reg-card" style="display:none">
         <h5 data-i18n="reg_result">📅 随访配准结果</h5>
@@ -2021,11 +2399,11 @@ const DISEASE_DB = {
   lipoma:               {name:'脂肪瘤',           cat:5, sev:0, color:'#6b7280'},
 };
 
-const CAT_NAMES  = ['感染性','过敏/炎症','慢性/免疫','皮脂腺/痤疮','色素性','肿瘤性','其他'];
-const CAT_COLORS = ['#ef4444','#f59e0b','#8b5cf6','#f97316','#6b7280','#dc2626','#64748b'];
-const SEV_LBL    = ['轻度','中度','重度'];
-const SEV_COL    = ['#10b981','#f59e0b','#ef4444'];
-const REG_LBL    = {face:'面部',arm:'手臂',back:'背部',leg:'腿部',hand:'手部',neck:'颈部'};
+CAT_NAMES  = ['感染性','过敏/炎症','慢性/免疫','皮脂腺/痤疮','色素性','肿瘤性','其他'];
+CAT_COLORS = ['#ef4444','#f59e0b','#8b5cf6','#f97316','#6b7280','#dc2626','#64748b'];
+SEV_LBL    = ['轻度','中度','重度']; // already declared early
+SEV_COL    = ['#10b981','#f59e0b','#ef4444'];
+REG_LBL    = {face:'面部',arm:'手臂',back:'背部',leg:'腿部',hand:'手部',neck:'颈部'};
 
 const SPECTRUM_DESC = {
   rgb:       {label:'RGB 标准',    desc:'自然光下拍摄，通用皮肤病变检测，最广泛使用'},
@@ -2193,6 +2571,8 @@ async function runAnalysis() {
   addRow(r);
   updateCharts(r);
   updateStats();
+  // 触发处置方案和护理宣教预生成
+  if (typeof postAnalysisHook === 'function') postAnalysisHook(r);
 }
 
 async function callClaude(url) {
@@ -2860,6 +3240,98 @@ function buildSpectrumGrid() {
   </div><!-- end cam-box -->
 </div><!-- end cam-modal -->
 
+
+<!-- ═══════════ 治疗护理宣教模态框 ═══════════ -->
+<div id="care-edu-modal" style="display:none;position:fixed;inset:0;background:rgba(7,20,40,.72);backdrop-filter:blur(6px);z-index:9000;overflow-y:auto;padding:20px">
+  <div style="max-width:820px;margin:0 auto;background:var(--white);border-radius:18px;box-shadow:0 20px 60px rgba(0,0,0,.35);overflow:hidden">
+    <!-- header -->
+    <div style="background:linear-gradient(135deg,#059669,#10b981);padding:18px 24px;display:flex;align-items:center;gap:12px">
+      <div style="flex:1">
+        <h2 style="color:#fff;font-size:17px;margin:0">🩹 <span id="ce-modal-title">治疗护理宣教</span></h2>
+        <div id="ce-modal-sub" style="font-size:11px;color:rgba(255,255,255,.75);margin-top:3px">根据AI诊断结果生成个性化护理宣教材料</div>
+      </div>
+      <button onclick="window.print()" style="background:rgba(255,255,255,.2);color:#fff;border:1px solid rgba(255,255,255,.3);border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer">🖨️ 打印</button>
+      <button onclick="closeCareEduModal()" style="background:rgba(255,255,255,.15);color:#fff;border:none;border-radius:50%;width:32px;height:32px;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center">✕</button>
+    </div>
+    <!-- loading -->
+    <div id="ce-loading" style="display:flex;flex-direction:column;align-items:center;padding:50px;gap:14px">
+      <div style="width:40px;height:40px;border:3px solid #dcfce7;border-top-color:#10b981;border-radius:50%;animation:spin .8s linear infinite"></div>
+      <div style="font-size:13px;color:#059669;font-weight:600">AI 正在生成护理宣教内容…</div>
+    </div>
+    <!-- content -->
+    <div id="ce-content" style="display:none;padding:20px 24px">
+      <!-- disease banner -->
+      <div id="ce-disease-banner" style="background:linear-gradient(135deg,#f0fdf4,#dcfce7);border:1px solid #6ee7b7;border-radius:12px;padding:14px 18px;margin-bottom:18px;display:flex;align-items:center;gap:14px">
+        <div style="font-size:28px" id="ce-disease-icon">🩺</div>
+        <div>
+          <div style="font-size:14px;font-weight:800;color:#065f46" id="ce-disease-name">—</div>
+          <div style="font-size:11px;color:#059669;margin-top:2px" id="ce-disease-sub">—</div>
+        </div>
+        <div style="margin-left:auto;text-align:right">
+          <div style="font-size:10px;color:#6b7280" id="ce-easi-label">EASI评分</div>
+          <div style="font-size:20px;font-weight:900;color:#059669" id="ce-easi-val">—</div>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px" id="ce-grid">
+
+        <!-- 日常护理 -->
+        <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:14px">
+          <div style="font-size:12px;font-weight:800;color:#065f46;margin-bottom:10px">🧴 日常皮肤护理</div>
+          <div id="ce-daily-care" style="font-size:11px;color:#15803d;line-height:1.8"></div>
+        </div>
+
+        <!-- 禁忌事项 -->
+        <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:12px;padding:14px">
+          <div style="font-size:12px;font-weight:800;color:#991b1b;margin-bottom:10px">🚫 注意与禁忌</div>
+          <div id="ce-avoid" style="font-size:11px;color:#dc2626;line-height:1.8"></div>
+        </div>
+
+        <!-- 用药指导 -->
+        <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;padding:14px">
+          <div style="font-size:12px;font-weight:800;color:#1e40af;margin-bottom:10px">💊 用药护理指导</div>
+          <div id="ce-med-guide" style="font-size:11px;color:#1d4ed8;line-height:1.8"></div>
+        </div>
+
+        <!-- 饮食生活 -->
+        <div style="background:#fefce8;border:1px solid #fde68a;border-radius:12px;padding:14px">
+          <div style="font-size:12px;font-weight:800;color:#92400e;margin-bottom:10px">🥗 饮食 & 生活方式</div>
+          <div id="ce-lifestyle" style="font-size:11px;color:#b45309;line-height:1.8"></div>
+        </div>
+
+        <!-- 复查提醒 -->
+        <div style="background:#faf5ff;border:1px solid #e9d5ff;border-radius:12px;padding:14px">
+          <div style="font-size:12px;font-weight:800;color:#6b21a8;margin-bottom:10px">📅 复查 & 监测</div>
+          <div id="ce-followup" style="font-size:11px;color:#7e22ce;line-height:1.8"></div>
+        </div>
+
+        <!-- 心理支持 -->
+        <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:12px;padding:14px">
+          <div style="font-size:12px;font-weight:800;color:#9a3412;margin-bottom:10px">💙 心理支持 & 自我管理</div>
+          <div id="ce-psych" style="font-size:11px;color:#c2410c;line-height:1.8"></div>
+        </div>
+
+      </div>
+
+      <!-- 警示症状 -->
+      <div id="ce-redflags-wrap" style="margin-top:14px;background:#fee2e2;border:1px solid #fca5a5;border-radius:12px;padding:14px">
+        <div style="font-size:12px;font-weight:800;color:#991b1b;margin-bottom:8px">🚨 出现以下情况请立即就医</div>
+        <div id="ce-redflags" style="font-size:11px;color:#991b1b;line-height:1.8"></div>
+      </div>
+
+      <!-- 宣教卡片打印区 -->
+      <div style="margin-top:14px;padding:12px;background:var(--bg);border-radius:10px;font-size:10px;color:var(--text3);text-align:center">
+        ⚕️ 本宣教材料由AI辅助生成，仅供参考，请遵医嘱执行。如有不适请及时就诊。
+      </div>
+    </div>
+
+    <!-- footer -->
+    <div style="padding:12px 24px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end">
+      <button onclick="generateCareEdu()" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:7px 14px;font-size:12px;cursor:pointer">🔄 重新生成</button>
+      <button onclick="window.print()" style="background:linear-gradient(135deg,#059669,#10b981);color:#fff;border:none;border-radius:8px;padding:7px 14px;font-size:12px;cursor:pointer;font-weight:700">🖨️ 打印宣教单</button>
+    </div>
+  </div>
+</div>
 
 <!-- ═══════════ 患者信息录入模态框 ═══════════ -->
 <div id="patient-modal">
