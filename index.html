@@ -26,6 +26,9 @@ let camFrames = 0, camDis = 0, camOk = 0;
 let camTotalEasi = 0, camTotalTime = 0;
 let fpsTimer = null, fpsCount = 0, lastFpsT = Date.now();
 let camSnapshots = [];
+// 摄像头 bbox 时序平滑（减少抖动，提升稳定性）
+let camBboxHistory = [];
+const CAM_BBOX_SMOOTH_FRAMES = 3; // 取最近N帧的加权平均
 
 function openCamModal() {
   document.getElementById('cam-modal').classList.add('open');
@@ -178,8 +181,36 @@ async function analyzeFrame(snapUrl) {
   document.getElementById('cam-frame-count').textContent = 'FRAME ' + (++camFrames);
 
   let r;
-  try { r = await callClaudeFrame(snapUrl); }
+  try {
+    // 摄像头帧也进行轻度预处理（仅增强，不锐化以保持速度）
+    let enhancedSnap = snapUrl;
+    try { enhancedSnap = await preprocessImage(snapUrl, {contrast:1.15, brightness:3, sharpen:0}); } catch(pe){}
+    r = await callClaudeFrame(enhancedSnap);
+  }
   catch(e) { r = simulateCamFrame(); }
+
+  // ── 时序平滑：对 bbox 坐标做跨帧指数加权平均（减少抖动）──
+  if (r.diagnosis === 'disease' && r.bboxes && r.bboxes.length > 0) {
+    camBboxHistory.push(r.bboxes);
+    if (camBboxHistory.length > CAM_BBOX_SMOOTH_FRAMES) camBboxHistory.shift();
+    if (camBboxHistory.length >= 2) {
+      // 仅平滑primary框，其他类型保持原样
+      const smoothed = JSON.parse(JSON.stringify(r.bboxes));
+      smoothed.forEach((box, bi) => {
+        if (box.type !== 'primary') return;
+        const history = camBboxHistory.map(h => h.find(b => b.type==='primary')).filter(Boolean);
+        if (history.length < 2) return;
+        const weights = history.map((_, i) => Math.pow(0.6, history.length-1-i));
+        const wSum = weights.reduce((a,b)=>a+b,0);
+        ['x','y','w','h'].forEach(k => {
+          box[k] = history.reduce((acc,b,i) => acc + b[k]*weights[i], 0) / wSum;
+        });
+      });
+      r.bboxes = smoothed;
+    }
+  } else {
+    camBboxHistory = [];
+  }
 
   const elapsed = Date.now() - t0;
   camTotalTime += elapsed;
@@ -200,29 +231,60 @@ async function callClaudeFrame(url) {
   const b64   = url.split(',')[1];
   const mtype = url.split(';')[0].split(':')[1]||'image/jpeg';
   const spec  = document.getElementById('specMode')?.value||'rgb';
-  const sys   = `You are a real-time dermatology screening AI. Analyze this skin camera frame quickly.
-Return ONLY valid JSON:
+  const sys   = `You are a real-time dermatology screening AI. Your primary job is LESION DETECTION — never miss a visible lesion.
+
+SPECTRUM: ${spec}
+
+## ⚠️ DETECTION-FIRST RULE:
+Before deciding "normal", scan the entire frame for ANY focal area that differs from surrounding skin:
+- DARK/PIGMENTED area (brown, black, deep red) that stands out from background → disease
+- RAISED or ROUGH textured focal zone → disease
+- ERYTHEMATOUS (red) patch with defined edge → disease
+⛔ Only return "normal" when the entire frame shows uniform, lesion-free skin.
+
+## LESION TYPES (fast check):
+- Dark pigmented lesion → melanocytic_nevi or melanoma (use ABCDE for distinction)
+- Pustules/papules/comedones → acne variants
+- Erythema + scale → psoriasis, eczema, seborrheic dermatitis
+- Flushing + no comedones → rosacea
+- Grouped vesicles → herpes
+- Honey crust → impetigo
+- Annular clearing → tinea
+- Depigmented patch → vitiligo
+- Urticarial wheals → urticaria
+
+## CALIBRATION:
+- Blurry/low-light/non-skin-dominant frame → diagnosis=normal, confidence≤0.45, needReview=true
+- Visible focal lesion present → diagnosis=disease, confidence≥0.65
+- High-risk features (asymmetry, black lesion, ulceration) → risk=high, needReview=true
+
+BBOX: Tight box around lesion. Normalized x,y,w,h (0-1). Only add if lesion clearly visible.
+
+Return ONLY valid JSON (single line, no markdown):
 {"diagnosis":"disease"|"normal","confidence":0-1,"diseaseKey":"<key>","severity":0|1|2,"area":"e.g.约12%","areaRatio":0-1,"easiArea":0-6,"erythemaIntensity":0-1,"easiErythema":0-3,"pigmentScore":0-3,"easiTotal":0-72,"risk":"low"|"moderate"|"high","needReview":true|false,"top3":[{"key":"","name":"","confidence":0}],"bboxes":[{"x":0-1,"y":0-1,"w":0-1,"h":0-1,"label":"","type":"primary"|"secondary"|"suspect","conf":0-1}]}
-Keys: acne_papulopustular,eczema,psoriasis,melanoma,bcc,scc,atopic_dermatitis,contact_dermatitis,rosacea,melanocytic_nevi,impetigo,herpes_simplex,vitiligo,melasma,urticaria,normal`;
+Disease keys: acne_papulopustular,acne_comedonal,acne_cystic,rosacea,atopic_dermatitis,eczema,contact_dermatitis,seborrheic_dermatitis,psoriasis,melanoma,melanocytic_nevi,bcc,scc,impetigo,folliculitis,herpes_simplex,herpes_zoster,vitiligo,melasma,urticaria,tinea_corporis,normal`;
 
   const resp = await fetch('https://api.anthropic.com/v1/messages',{
     method:'POST',
     headers:{'Content-Type':'application/json','anthropic-dangerous-direct-browser-calls':'true'},
     body:JSON.stringify({
-      model:'claude-sonnet-4-20250514', max_tokens:600, system:sys,
+      model:'claude-sonnet-4-20250514', max_tokens:800, system:sys,
       messages:[{role:'user',content:[
         {type:'image',source:{type:'base64',media_type:mtype,data:b64}},
-        {type:'text',text:`Real-time skin scan. Spectrum:${spec}. Fast analysis, JSON only.`}
+        {type:'text',text:`Screen this skin camera frame. Spectrum: ${spec}. Assess morphology carefully. If image is blurry or non-skin dominant, return normal with low confidence. JSON only.`}
       ]}]
     })
   });
   const data = await resp.json();
   if(data.error) throw new Error(data.error.message);
   const txt = data.content?.find(c=>c.type==='text')?.text||'';
-  const p = JSON.parse(txt.replace(/^```(?:json)?\s*/m,'').replace(/\s*```\s*$/m,'').trim());
+  const p = JSON.parse(txt.replace(/^```(?:json)?\s*/m,'').replace(/\s*```\s*```\s*$/m,'').replace(/```/g,'').trim());
   const dInfo = DISEASE_DB[p.diseaseKey]||{color:'#10b981',sev:1};
+  // Confidence calibration: high-risk diseases require higher threshold for needReview
+  const highRisk = ['melanoma','bcc','scc'].includes(p.diseaseKey);
+  const needReviewCalc = p.needReview || p.confidence < (highRisk ? 0.7 : 0.6);
   return {
-    diagnosis:p.diagnosis, conf:p.confidence||.75,
+    diagnosis:p.diagnosis, conf:Math.min(0.97, Math.max(0.1, p.confidence||.75)),
     color: p.diagnosis==='disease'?(dInfo.color||'#ef4444'):'#10b981',
     diseaseKey:p.diseaseKey||'normal',
     diseaseName:(DISEASE_DB[p.diseaseKey]?.name||p.diseaseKey||'正常'),
@@ -230,7 +292,7 @@ Keys: acne_papulopustular,eczema,psoriasis,melanoma,bcc,scc,atopic_dermatitis,co
     areaRatio:p.areaRatio||0, easiArea:p.easiArea||0,
     erythemaIntensity:p.erythemaIntensity||0, easiErythema:p.easiErythema||0,
     pigmentScore:p.pigmentScore||0, easiTotal:p.easiTotal||0,
-    risk:p.risk||'low', needReview:p.needReview||p.confidence<.6,
+    risk:p.risk||'low', needReview:needReviewCalc,
     top3:p.top3||[], bboxes:p.bboxes||[]
   };
 }
@@ -2550,6 +2612,229 @@ function loadDemo() {
 }
 
 // ═══════════════════════════════════════════════════
+// 图像预处理：增强对比度与锐化（提升病灶可见度）
+// ═══════════════════════════════════════════════════
+function preprocessImage(dataUrl, options) {
+  options = options || {};
+  return new Promise(function(resolve) {
+    var img = new Image();
+    img.onload = function() {
+      var c = document.createElement('canvas');
+      c.width = img.naturalWidth; c.height = img.naturalHeight;
+      var ctx = c.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+
+      // 对比度增强
+      var id = ctx.getImageData(0, 0, c.width, c.height);
+      var d = id.data;
+      var contrast = options.contrast !== undefined ? options.contrast : 1.22;
+      var brightness = options.brightness !== undefined ? options.brightness : 4;
+      var factor = (259*(contrast*100+255))/(255*(259-contrast*100));
+      for (var i=0; i<d.length; i+=4) {
+        d[i]   = Math.min(255, Math.max(0, factor*(d[i]  -128)+128+brightness));
+        d[i+1] = Math.min(255, Math.max(0, factor*(d[i+1]-128)+128+brightness));
+        d[i+2] = Math.min(255, Math.max(0, factor*(d[i+2]-128)+128+brightness));
+      }
+      ctx.putImageData(id, 0, 0);
+
+      // Unsharp mask (锐化)
+      var sharpened = ctx.getImageData(0, 0, c.width, c.height);
+      var src = new Uint8ClampedArray(sharpened.data);
+      var W = c.width, H = c.height;
+      var amount = options.sharpen !== undefined ? options.sharpen : 0.38;
+      var kernel = [0,-1,0,-1,5,-1,0,-1,0];
+      for (var y=1; y<H-1; y++) {
+        for (var x=1; x<W-1; x++) {
+          var idx = (y*W+x)*4;
+          for (var ch=0; ch<3; ch++) {
+            var sum=0;
+            for (var ky=-1; ky<=1; ky++) for (var kx=-1; kx<=1; kx++) {
+              sum += src[((y+ky)*W+(x+kx))*4+ch] * kernel[(ky+1)*3+(kx+1)];
+            }
+            sharpened.data[idx+ch] = Math.min(255,Math.max(0,
+              src[idx+ch]*(1-amount) + sum*amount
+            ));
+          }
+        }
+      }
+      ctx.putImageData(sharpened, 0, 0);
+      resolve(c.toDataURL('image/jpeg', 0.92));
+    };
+    img.src = dataUrl;
+  });
+}
+
+// ═══════════════════════════════════════════════════
+// 客户端暗区预检：检测色素性病灶（防误判正常）
+// ═══════════════════════════════════════════════════
+function detectDarkLesion(dataUrl) {
+  return new Promise(function(resolve) {
+    var img = new Image();
+    img.onload = function() {
+      var c = document.createElement('canvas');
+      var scale = Math.min(1, 200/Math.max(img.naturalWidth, img.naturalHeight));
+      c.width  = Math.round(img.naturalWidth  * scale);
+      c.height = Math.round(img.naturalHeight * scale);
+      var ctx = c.getContext('2d');
+      ctx.drawImage(img, 0, 0, c.width, c.height);
+      var id = ctx.getImageData(0, 0, c.width, c.height);
+      var d = id.data;
+      var W = c.width, H = c.height;
+
+      // 1. 计算整体平均亮度（排除边缘10%）
+      var sumL = 0, countL = 0;
+      var m = Math.round(Math.min(W,H)*0.1);
+      for (var y=m; y<H-m; y++) {
+        for (var x=m; x<W-m; x++) {
+          var i = (y*W+x)*4;
+          sumL += (d[i]+d[i+1]+d[i+2])/3;
+          countL++;
+        }
+      }
+      var avgL = sumL / countL;
+
+      // 2. 滑动窗口检测：找局部暗区（比均值暗40+，且区域>1%面积）
+      var blockSize = Math.max(4, Math.round(Math.min(W,H)*0.08));
+      var darkBlocks = 0, totalBlocks = 0;
+      var darkThreshold = avgL * 0.60; // 局部均值低于全局均值60%才算暗区
+
+      for (var by=m; by<H-m-blockSize; by+=blockSize) {
+        for (var bx=m; bx<W-m-blockSize; bx+=blockSize) {
+          var blockSum = 0;
+          for (var dy=0; dy<blockSize; dy++) {
+            for (var dx=0; dx<blockSize; dx++) {
+              var bi = ((by+dy)*W+(bx+dx))*4;
+              blockSum += (d[bi]+d[bi+1]+d[bi+2])/3;
+            }
+          }
+          var blockAvg = blockSum / (blockSize*blockSize);
+          totalBlocks++;
+          if (blockAvg < darkThreshold) darkBlocks++;
+        }
+      }
+
+      // 3. 色调分析：检测红色/棕色异常区（炎症/血管性病灶）
+      var redAbnormal = 0;
+      for (var y2=m; y2<H-m; y2++) {
+        for (var x2=m; x2<W-m; x2++) {
+          var i2 = (y2*W+x2)*4;
+          var r2=d[i2], g2=d[i2+1], b2=d[i2+2];
+          // 红色超标且与绿蓝差距明显 = 炎性红斑
+          if (r2 > 180 && r2-g2 > 50 && r2-b2 > 50) redAbnormal++;
+        }
+      }
+      var redRatio = redAbnormal / countL;
+
+      // 4. 判断：暗区占比>2% 或 红斑区占比>3% → 存在病灶
+      var darkRatio = darkBlocks / Math.max(1, totalBlocks);
+      var hasDarkLesion = darkRatio > 0.02 || redRatio > 0.03;
+
+      // 5. 边缘连通性检测：暗区是否集中（避免头发/阴影误报）
+      if (hasDarkLesion && darkRatio > 0 && darkRatio < 0.5) {
+        // 暗区集中（占比 2%-50%）= 局灶性病灶，更可信
+        resolve(true);
+      } else if (redRatio > 0.03) {
+        resolve(true);
+      } else {
+        resolve(false);
+      }
+    };
+    img.onerror = function() { resolve(false); };
+    img.src = dataUrl;
+  });
+}
+
+// 病灶定位的疾病特异性提示
+function getDiseaseLocalizationHint(key) {
+  var hints = {
+    melanoma:          'Look for asymmetric pigmented lesion. Outline the entire pigmented area. Mark satellite pigmentation as suspect.',
+    bcc:               'Find pearlescent/translucent nodule with rolled border and telangiectasia. Box tightly around the central lesion.',
+    scc:               'Locate indurated keratotic plaque or ulcerated nodule. Include all keratotic scale.',
+    melanocytic_nevi:  'Circular/oval pigmented mole. Tight box around visible pigmentation.',
+    psoriasis:         'Well-demarcated erythematous plaques with silvery scale. Box each distinct plaque separately.',
+    eczema:            'Poorly-defined erythematous patches, may be weeping or crusted. Include excoriation marks.',
+    atopic_dermatitis: 'Flexural lichenified plaques. Include all erythematous/thickened areas.',
+    contact_dermatitis:'Geometric or linear erythematous patches following the exposure pattern.',
+    rosacea:           'Central face erythema, papules/pustules. Box active erythematous/papular zones.',
+    acne_papulopustular:'Individual papules and pustules. Box the primary cluster or most inflamed area.',
+    acne_cystic:       'Deep nodules/cysts. Box each prominent nodule.',
+    impetigo:          'Honey-yellow crusted lesions. Tight box around crusted areas.',
+    herpes_simplex:    'Grouped vesicles on erythematous base. Include all vesicle clusters.',
+    herpes_zoster:     'Dermatomal vesicle clusters. Follow the dermatomal strip.',
+    tinea_corporis:    'Annular lesion with central clearing and scaly advancing edge. Box the ring.',
+    vitiligo:          'Depigmented white patches with defined border. Box each depigmented area.',
+    melasma:           'Brown hyperpigmented patches. Box each distinct hyperpigmented area.',
+    urticaria:         'Raised wheals with flare. Box active wheals.'
+  };
+  return hints[key] || 'Identify the primary area of color/texture abnormality compared to surrounding normal skin.';
+}
+
+// ═══════════════════════════════════════════════════
+// 专项病灶定位（第二阶段 API 调用）
+// ═══════════════════════════════════════════════════
+async function callClaudeLocalize(url, diagResult) {
+  var b64   = url.split(',')[1];
+  var mtype = url.split(';')[0].split(':')[1]||'image/jpeg';
+
+  var sys = `You are a dermatology lesion localization specialist. Your ONLY task: draw precise, tight bounding boxes around every skin lesion visible in this image.
+
+PRIOR DIAGNOSIS: ${diagResult.diseaseName} (${diagResult.diseaseKey})
+SEVERITY: ${SEV_LBL[diagResult.severity||0]}
+BODY REGION: ${REG_LBL[diagResult.region]||diagResult.region||'unknown'}
+
+## STEP-BY-STEP LOCALIZATION (think before outputting):
+Step 1 — Grid scan: mentally divide the image into a 4×4 grid. Check each cell for lesion presence.
+Step 2 — Per lesion: for each lesion found, estimate its bounding box:
+   x = distance from left edge / total image width  (decimal 0.0–1.0)
+   y = distance from top edge / total image height  (decimal 0.0–1.0)
+   w = lesion width / total image width             (decimal 0.0–1.0)
+   h = lesion height / total image height           (decimal 0.0–1.0)
+   TIGHT BOXES ONLY — do not include surrounding normal skin.
+Step 3 — Classify: primary = largest/most characteristic; secondary = satellite/adjacent; suspect = ambiguous.
+Step 4 — Label in Chinese with specific morphology (e.g. 红斑斑块, 丘疹簇, 鳞屑区, 水疱群, 结节, 溃疡).
+Step 5 — Confidence: how certain this region is diseased (0–1).
+
+## DISEASE-SPECIFIC CLUES (${diagResult.diseaseKey}):
+${getDiseaseLocalizationHint(diagResult.diseaseKey)}
+
+## RULES:
+- Return EMPTY ARRAY [] if image shows no clear lesion.
+- Maximum 5 boxes. Prefer fewer, more accurate boxes over many loose ones.
+- Never box normal skin just to fill space.
+
+Return ONLY a valid JSON array, no markdown, no explanation:
+[{"x":0.0,"y":0.0,"w":0.0,"h":0.0,"label":"病灶名称","type":"primary","conf":0.0}]`;
+
+  var resp = await fetch('https://api.anthropic.com/v1/messages',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','anthropic-dangerous-direct-browser-calls':'true'},
+    body:JSON.stringify({
+      model:'claude-sonnet-4-20250514',
+      max_tokens:800,
+      system:sys,
+      messages:[{role:'user',content:[
+        {type:'image',source:{type:'base64',media_type:mtype,data:b64}},
+        {type:'text',text:`Localize all ${diagResult.diseaseName} lesions. Perform grid scan, estimate coordinates carefully, use tight boxes. Return JSON array only.`}
+      ]}]
+    })
+  });
+  var data = await resp.json();
+  if(data.error) throw new Error(data.error.message);
+  var txt = data.content?.find(c=>c.type==='text')?.text||'[]';
+  var arr = JSON.parse(txt.replace(/^```(?:json)?\s*/m,'').replace(/\s*```\s*$/m,'').trim());
+  if(!Array.isArray(arr)) return [];
+  return arr.filter(b=>b&&typeof b.x==='number').map(b=>({
+    x: Math.min(0.95, Math.max(0, b.x)),
+    y: Math.min(0.95, Math.max(0, b.y)),
+    w: Math.min(1-Math.max(0,b.x), Math.max(0.02, b.w)),
+    h: Math.min(1-Math.max(0,b.y), Math.max(0.02, b.h)),
+    label: b.label||'病灶',
+    type:  ['primary','secondary','suspect'].includes(b.type)?b.type:'primary',
+    conf:  Math.min(1,Math.max(0,b.conf||0.8))
+  }));
+}
+
+// ═══════════════════════════════════════════════════
 // AI 分析
 // ═══════════════════════════════════════════════════
 async function runAnalysis() {
@@ -2557,7 +2842,23 @@ async function runAnalysis() {
   document.getElementById('loading').style.display='flex';
   const t0=Date.now();
   let r;
-  try { r = await callClaude(imgData); }
+  try {
+    // 阶段1: 图像预处理（增强对比度/锐化，提升病灶可见性）
+    const enhanced = await preprocessImage(imgData);
+    // 阶段1.5: 客户端暗区预检（色素性病灶快速检测，防止误判正常）
+    window._darkLesionDetected = await detectDarkLesion(imgData);
+    // 阶段2: 诊断分析
+    r = await callClaude(enhanced);
+    // 阶段3: 若检测到病变，专项病灶定位（第二次 API，bbox 精度更高）
+    if (r.diagnosis === 'disease') {
+      try {
+        const refinedBboxes = await callClaudeLocalize(enhanced, r);
+        if (refinedBboxes && refinedBboxes.length > 0) {
+          r.bboxes = refinedBboxes;
+        }
+      } catch(e2) { console.warn('Localization pass failed, using diagnosis bboxes:', e2); }
+    }
+  }
   catch(e) { console.warn('API fallback:', e); r = simulate(); }
   document.getElementById('loading').style.display='none';
   lastR = r;
@@ -2591,17 +2892,78 @@ async function callClaude(url) {
   };
   const normInfo = SPECTRUM_NORM[spec]||SPECTRUM_NORM.rgb;
 
-  const sys = `You are a clinical dermatology AI based on EfficientNetV2-M trained on 42 skin disease classes.
-Spectrum mode: ${spec} (norm mean=${JSON.stringify(normInfo.mean)}, std=${JSON.stringify(normInfo.std)}).
-The model uses: GeM pooling, multi-task learning (main class + 7 super-categories + severity head), TTA×5, SCE loss for label noise robustness.
-Return ONLY valid JSON (no markdown):
+  // Build patient context string for higher accuracy
+  const ptCtx = patientData ? `
+PATIENT CONTEXT (use this to improve differential diagnosis):
+- Age: ${patientData.age||'unknown'}, Gender: ${patientData.genderLabel||'unknown'}
+- Body region: ${REG_LBL[reg]||reg}
+- Lesion duration: ${patientData.duration||'unknown'}
+- Trend: ${patientData.trendLabel||'unknown'}
+- Symptoms: ${patientData.symLabels||'unknown'}
+- Previous medications: ${patientData.prevMed||'none'}
+- Allergies: ${patientData.allergy||'none'}
+- Family history: ${patientData.familyLabel||'none'}
+- Comorbidities: ${patientData.comorbid||'none'}
+- Fitzpatrick skin type: ${patientData.fitz||'unspecified'}` : `PATIENT CONTEXT: Not provided. Rely on visual features only.`;
+
+  const sys = `You are an expert clinical dermatologist AI with board-level diagnostic accuracy, specializing in skin lesion detection.
+
+SPECTRUM: ${spec} (normalization mean=${JSON.stringify(normInfo.mean)}, std=${JSON.stringify(normInfo.std)})
+${ptCtx}
+
+## ⚠️ CRITICAL: LESION DETECTION FIRST (do this before anything else)
+Scan the ENTIRE image for ANY focal area that differs from the surrounding skin in:
+- COLOR: darker (brown/black/deep red), lighter (white/pale), or multi-colored patches
+- TEXTURE: rougher, smoother, raised, depressed, or structurally distinct zones  
+- BORDER: any area with a defined edge separating it from normal skin
+- SIZE: any lesion ≥5mm that stands out from background skin
+
+⛔ NEVER diagnose "normal" if ANY such focal abnormality exists — even if the rest of the skin looks healthy.
+⛔ Pigmented lesions (dark brown or black areas) on a lighter skin background ALWAYS warrant disease classification unless they are clearly identified as normal anatomical structures (freckles <2mm, hair follicles).
+
+## PIGMENTED LESION SENSITIVITY (highest priority)
+If you observe a DARK BROWN or BLACK focal lesion:
+- Apply ABCDE criteria: Asymmetry, Border irregularity, Color variation, Diameter, Evolution (use visible cues)
+- Default differentials: melanocytic_nevi (benign mole), melanoma (malignant), bcc, ephelides, melasma
+- A well-circumscribed dark lesion with uniform color → melanocytic_nevi
+- An asymmetric dark lesion with irregular border or color variation → melanoma or suspect
+- ALWAYS mark as disease. NEVER classify a visible dark pigmented lesion as normal.
+
+## STEP-BY-STEP DIAGNOSTIC PROTOCOL:
+1. ABNORMALITY SCAN: Identify every focal abnormal area before deciding diagnosis.
+2. LESION CHARACTERIZATION: For each finding: morphology type, color, border, surface.
+3. BACKGROUND vs LESION: Compare lesion color/texture to surrounding normal skin explicitly.
+4. DIFFERENTIAL NARROWING: Top-3 candidates with reasoning. Use patient context if available.
+5. CONFIDENCE CALIBRATION: Reflect true uncertainty. Poor image quality → lower confidence + needReview=true. Visible obvious lesion → confidence ≥0.75.
+
+## KEY DIFFERENTIATORS:
+- Melanocytic nevi vs Melanoma: uniform dark brown + smooth border = nevi; irregular color/border = melanoma
+- Psoriasis vs Eczema: silvery scale + sharp margins vs weeping/crusting + flexural
+- BCC: pearlescent rolled border + telangiectasia
+- SCC: indurated keratotic plaque or ulcerated nodule
+- Rosacea vs Acne: no comedones + facial flushing vs comedones present
+- Contact vs Atopic: geometric/exposure pattern vs flexural chronic
+- Tinea: annular with central clearing + advancing scaly edge
+
+## EASI SCORING:
+- easiArea (0-6): 0=<1%, 1=1-9%, 2=10-29%, 3=30-49%, 4=50-69%, 5=70-89%, 6=90-100%
+- easiErythema (0-3): 0=absent, 1=mild pink, 2=moderate red, 3=intense deep red
+- pigmentScore (0-3): 0=none, 1=faint, 2=moderate, 3=marked hyperpigmentation
+- easiTotal = easiArea × (easiErythema + 1)
+
+## BOUNDING BOX RULES:
+- x,y = top-left corner (normalized 0-1), w,h = width/height (normalized 0-1)
+- ALWAYS box any focal lesion found. Tight boxes around lesion boundary, not surrounding skin.
+- Add secondary/suspect boxes for satellite lesions or ambiguous zones.
+
+Return ONLY valid JSON (no markdown, no text outside JSON):
 {
   "diagnosis":"disease"|"normal",
   "confidence":0-1,
   "diseaseKey":"<key>",
   "severity":0|1|2,
-  "sevDesc":"<Chinese>",
-  "disDesc":"<Chinese 1-sentence>",
+  "sevDesc":"<Chinese severity description>",
+  "disDesc":"<Chinese 1-2 sentence description with morphological evidence>",
   "category":0-6,
   "area":"e.g.约18%",
   "areaRatio":0-1,
@@ -2616,23 +2978,29 @@ Return ONLY valid JSON (no markdown):
   "sceScore":0-1,
   "needReview":true|false,
   "risk":"low"|"moderate"|"high",
-  "aiNote":"<Chinese 2-3 sentence clinical note including spectrum-specific findings>",
+  "aiNote":"<Chinese 2-3 sentences: what you see → what it suggests → recommendation>",
   "top3":[{"key":"","name":"","confidence":0},...],
   "bboxes":[{"x":0,"y":0,"w":0,"h":0,"label":"","type":"primary"|"secondary"|"suspect","conf":0},...],
-  "gradcamInfo":"<Chinese 1-sentence describing what GradCAM highlights>"
+  "gradcamInfo":"<Chinese 1 sentence describing the specific visual feature that most influenced diagnosis>"
 }
-Disease keys: acne_papulopustular,acne_comedonal,acne_cystic,rosacea,atopic_dermatitis,eczema,contact_dermatitis,seborrheic_dermatitis,psoriasis,melanoma,melanocytic_nevi,bcc,scc,impetigo,folliculitis,erysipelas,herpes_simplex,herpes_zoster,verruca,varicella,tinea_corporis,tinea_cruris,tinea_pedis,onychomycosis,candidiasis,melasma,vitiligo,hypopigmentation,ephelides,urticaria,scabies,pediculosis,lupus_erythema,dermatomyositis,lipoma`;
+Disease keys (35): acne_papulopustular,acne_comedonal,acne_cystic,rosacea,atopic_dermatitis,eczema,contact_dermatitis,seborrheic_dermatitis,psoriasis,melanoma,melanocytic_nevi,bcc,scc,impetigo,folliculitis,erysipelas,herpes_simplex,herpes_zoster,verruca,varicella,tinea_corporis,tinea_cruris,tinea_pedis,onychomycosis,candidiasis,melasma,vitiligo,hypopigmentation,ephelides,urticaria,scabies,pediculosis,lupus_erythema,dermatomyositis,lipoma
+Category map: 0=感染性, 1=过敏/炎症, 2=慢性/免疫, 3=皮脂腺/痤疮, 4=色素性, 5=肿瘤性, 6=其他`;
 
   const resp = await fetch('https://api.anthropic.com/v1/messages',{
     method:'POST',
     headers:{'Content-Type':'application/json','anthropic-dangerous-direct-browser-calls':'true'},
     body:JSON.stringify({
       model:'claude-sonnet-4-20250514',
-      max_tokens:1400,
+      max_tokens:1800,
       system:sys,
       messages:[{role:'user',content:[
         {type:'image',source:{type:'base64',media_type:mtype,data:b64}},
-        {type:'text',text:`Analyze this skin image. Region: ${REG_LBL[reg]}. Spectrum: ${spec}. Apply TTA×5 simulation. Return JSON only.`}
+        {type:'text',text:(()=>{
+          // Client-side pigment pre-check: tell AI about any dark region detected
+          const darkHint = window._darkLesionDetected ?
+            'IMPORTANT: A dark pigmented focal lesion has been detected in this image by pre-analysis. Do NOT classify as normal — identify the lesion type (melanocytic_nevi, melanoma, ephelides, melasma, etc).' : '';
+          return `Analyze this skin image step by step: (1) scan for any focal abnormality, (2) characterize the lesion if found, (3) provide diagnosis. Body region: ${REG_LBL[reg]}. Spectrum: ${spec}. TTA×5 ensemble. ${darkHint} Return valid JSON only.`;
+        })()}
       ]}]
     })
   });
@@ -2642,12 +3010,37 @@ Disease keys: acne_papulopustular,acne_comedonal,acne_cystic,rosacea,atopic_derm
   const p = JSON.parse(txt.replace(/^```(?:json)?\s*/m,'').replace(/\s*```\s*$/m,'').trim());
 
   const dInfo = DISEASE_DB[p.diseaseKey]||{color:'#64748b',sev:1,cat:6};
+  const isHighRisk = ['melanoma','bcc','scc'].includes(p.diseaseKey);
+  const needReviewCalc = p.needReview || p.confidence < (isHighRisk ? 0.75 : 0.6);
+  const validKey = DISEASE_DB[p.diseaseKey] ? p.diseaseKey : (p.diagnosis==='disease' ? 'eczema' : 'normal');
+  const validDInfo = DISEASE_DB[validKey]||{color:'#64748b',sev:1,cat:6};
+
+  // ── 暗区误判修正：客户端检测到病灶但AI返回"正常"时，强制标记为需复核 ──
+  let finalDiagnosis = p.diagnosis;
+  let finalKey = validKey;
+  let finalConf = Math.min(0.97, Math.max(0.1, p.confidence||.8));
+  let finalNeedReview = needReviewCalc;
+  let finalRisk = p.risk||(isHighRisk?'high':'low');
+  let finalNote = p.aiNote||''
+
+  if (window._darkLesionDetected && p.diagnosis === 'normal') {
+    // AI said normal but we detected a focal dark/red lesion → override to disease + needReview
+    finalDiagnosis = 'disease';
+    finalKey = 'melanocytic_nevi';  // safest pigment default; localization pass may refine
+    finalConf = Math.max(0.55, finalConf - 0.15);  // lower confidence since AI disagreed
+    finalNeedReview = true;
+    finalRisk = 'moderate';
+    finalNote = '客户端预检测到局灶性色素或红斑异常区域，AI初步判断为正常，建议人工复核以排除色素性病变。';
+    console.warn('[SkinAI] Dark lesion override: AI returned normal but client detected focal abnormality.');
+  }
+
+  const finalDInfo = DISEASE_DB[finalKey]||{color:'#f59e0b',sev:1,cat:4};
   return {
-    diagnosis:p.diagnosis, conf:p.confidence||.8,
-    color: p.diagnosis==='disease'?(dInfo.color||'#ef4444'):'#10b981',
-    diseaseKey:p.diseaseKey||'normal',
-    diseaseName:(DISEASE_DB[p.diseaseKey]?.name||p.diseaseKey),
-    severity:p.severity??1, sevDesc:p.sevDesc||'',
+    diagnosis:finalDiagnosis, conf:finalConf,
+    color: finalDiagnosis==='disease'?(finalDInfo.color||'#ef4444'):'#10b981',
+    diseaseKey:finalKey,
+    diseaseName:(DISEASE_DB[finalKey]?.name||finalKey),
+    severity:p.severity??1, sevDesc:p.sevDesc||''  ,
     disDesc:p.disDesc||'', category:p.category??6,
     area:p.area||'—', areaRatio:p.areaRatio||0,
     easiArea:p.easiArea||0, erythemaIntensity:p.erythemaIntensity||0,
@@ -2655,8 +3048,8 @@ Disease keys: acne_papulopustular,acne_comedonal,acne_cystic,rosacea,atopic_derm
     easiTotal:p.easiTotal||0,
     symmetry:p.symmetry||'—', border:p.border||'—',
     colorUniform:p.colorUniform||'—', sceScore:p.sceScore||0,
-    needReview:p.needReview||p.confidence<.6,
-    risk:p.risk||'low', aiNote:p.aiNote||'',
+    needReview:finalNeedReview,
+    risk:finalRisk, aiNote:finalNote,
     top3:p.top3||[], bboxes:p.bboxes||[],
     gradcamInfo:p.gradcamInfo||'',
     region:document.querySelector('input[name="reg"]:checked')?.value||'face',
@@ -2871,65 +3264,93 @@ function drawAnn(r) {
   if(!r.bboxes?.length) return;
 
   const styles={
-    primary:  {stroke:'#ef4444',fill:'rgba(239,68,68,.07)',  badge:'#ef4444'},
-    secondary:{stroke:'#f59e0b',fill:'rgba(245,158,11,.07)', badge:'#f59e0b'},
-    suspect:  {stroke:'#3b82f6',fill:'rgba(59,130,246,.07)', badge:'#3b82f6'},
+    primary:  {stroke:'#ef4444',fill:'rgba(239,68,68,.06)',  badge:'#ef4444', shadow:'rgba(239,68,68,0.45)'},
+    secondary:{stroke:'#f59e0b',fill:'rgba(245,158,11,.05)', badge:'#f59e0b', shadow:'rgba(245,158,11,0.35)'},
+    suspect:  {stroke:'#3b82f6',fill:'rgba(59,130,246,.05)', badge:'#3b82f6', shadow:'rgba(59,130,246,0.35)'},
   };
 
   r.bboxes.forEach((b,idx)=>{
     const x=b.x*W,y=b.y*H,w=b.w*W,h=b.h*H;
     const st=styles[b.type]||styles.primary;
     const pct=Math.round((b.conf||.8)*100);
+    // 线宽随置信度变化：置信度越高线越粗
+    const lw = 2 + (b.conf||0.8)*2;
     ctx.save();
 
-    // 填充
+    // 填充（半透明）
     ctx.fillStyle=st.fill;
     ctx.fillRect(x,y,w,h);
 
-    // 虚线边框
-    ctx.strokeStyle=st.stroke; ctx.lineWidth=2.5; ctx.setLineDash([8,4]);
-    ctx.strokeRect(x,y,w,h); ctx.setLineDash([]);
+    // 外发光效果（仅primary）
+    if(b.type==='primary') {
+      ctx.shadowColor=st.shadow;
+      ctx.shadowBlur=8;
+    }
 
-    // 角标
-    const bl=Math.min(w,h)*.22;
-    ctx.lineWidth=3.5; ctx.strokeStyle=st.stroke;
+    // 实线+虚线双边框（精度感更强）
+    // 外层实线（细）
+    ctx.strokeStyle=st.stroke+'88'; ctx.lineWidth=1; ctx.setLineDash([]);
+    ctx.strokeRect(x-1,y-1,w+2,h+2);
+    // 内层虚线（主）
+    ctx.strokeStyle=st.stroke; ctx.lineWidth=lw; ctx.setLineDash([8,4]);
+    ctx.strokeRect(x,y,w,h); ctx.setLineDash([]);
+    ctx.shadowBlur=0;
+
+    // L形角标（更精准感）
+    const bl=Math.min(w,h)*.2;
+    ctx.lineWidth=lw+0.5; ctx.strokeStyle=st.stroke;
     [[x,y,1,1],[x+w,y,-1,1],[x,y+h,1,-1],[x+w,y+h,-1,-1]].forEach(([cx,cy,dx,dy])=>{
       ctx.beginPath();
       ctx.moveTo(cx+dx*bl,cy); ctx.lineTo(cx,cy); ctx.lineTo(cx,cy+dy*bl);
       ctx.stroke();
     });
 
-    // 标签
-    const lbl=`${b.label} ${pct}%`;
-    ctx.font=`bold 12px "Noto Sans SC","Microsoft YaHei",sans-serif`;
+    // 中心精准点（primary only）
+    if(b.type==='primary') {
+      const cx2=x+w/2, cy2=y+h/2;
+      ctx.beginPath(); ctx.arc(cx2,cy2,3,0,Math.PI*2);
+      ctx.fillStyle=st.stroke; ctx.fill();
+      // 微型十字
+      ctx.strokeStyle=st.stroke+'cc'; ctx.lineWidth=1; ctx.setLineDash([3,3]);
+      ctx.beginPath(); ctx.moveTo(cx2-12,cy2); ctx.lineTo(cx2+12,cy2); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cx2,cy2-12); ctx.lineTo(cx2,cy2+12); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // 标签背景（带置信度渐变）
+    const lbl=`${idx+1}. ${b.label}  ${pct}%`;
+    ctx.font=`bold 11.5px "Noto Sans SC","Microsoft YaHei",sans-serif`;
     const tw=ctx.measureText(lbl).width;
     const bx=x, by=y>26?y-24:y+h+3;
-    ctx.fillStyle=st.badge;
+    // 渐变标签背景
+    const grad=ctx.createLinearGradient(bx,by,bx+tw+18,by);
+    grad.addColorStop(0, st.badge);
+    grad.addColorStop(1, st.badge+'cc');
+    ctx.fillStyle=grad;
     ctx.beginPath();
-    if(ctx.roundRect) ctx.roundRect(bx,by,tw+16,20,4); else ctx.rect(bx,by,tw+16,20);
+    if(ctx.roundRect) ctx.roundRect(bx,by,tw+18,20,4); else ctx.rect(bx,by,tw+18,20);
     ctx.fill();
-    ctx.fillStyle='#fff'; ctx.fillText(lbl,bx+8,by+14);
-    ctx.fillStyle=st.stroke; ctx.font='bold 12px monospace';
-    ctx.fillText(String(idx+1),x+5,y+16);
+    ctx.fillStyle='#fff'; ctx.fillText(lbl,bx+9,by+14);
 
-    // 面积标注（EASI量化）
+    // 面积+EASI标注（primary）
     if(b.type==='primary'&&r.areaRatio) {
-      const areaLabel=`面积 ${Math.round(r.areaRatio*100)}%  EASI-A:${r.easiArea}`;
-      ctx.font=`10px "Noto Sans SC","Microsoft YaHei",sans-serif`;
+      const areaLabel=`面积 ${Math.round(r.areaRatio*100)}%  EASI: ${r.easiArea}/6  红斑: ${r.easiErythema}/3`;
+      ctx.font=`9.5px "Noto Sans SC","Microsoft YaHei",sans-serif`;
       const aw=ctx.measureText(areaLabel).width;
-      ctx.fillStyle='rgba(26,86,219,.85)';
-      ctx.fillRect(x,y+h+3,aw+12,16);
-      ctx.fillStyle='#fff'; ctx.fillText(areaLabel,x+6,y+h+14);
+      ctx.fillStyle='rgba(17,45,107,.88)';
+      if(ctx.roundRect) ctx.roundRect(x,y+h+3,aw+14,16,3); else ctx.rect(x,y+h+3,aw+14,16);
+      ctx.fill();
+      ctx.fillStyle='#e0f2fe'; ctx.fillText(areaLabel,x+7,y+h+14);
     }
     ctx.restore();
   });
 
-  // 十字准线
+  // 全局十字准线（主病灶中心）
   const prim=r.bboxes.find(b=>b.type==='primary')||r.bboxes[0];
   if(prim){
     const cx=(prim.x+prim.w/2)*W, cy=(prim.y+prim.h/2)*H;
     ctx.save();
-    ctx.strokeStyle='rgba(239,68,68,.35)'; ctx.lineWidth=1; ctx.setLineDash([5,5]);
+    ctx.strokeStyle='rgba(239,68,68,.28)'; ctx.lineWidth=1; ctx.setLineDash([4,6]);
     ctx.beginPath(); ctx.moveTo(cx,0); ctx.lineTo(cx,H); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(0,cy); ctx.lineTo(W,cy); ctx.stroke();
     ctx.restore();
