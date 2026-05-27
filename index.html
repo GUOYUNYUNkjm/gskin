@@ -752,6 +752,425 @@ function updateCamLang(lang) {
   if(fuSnap) fuSnap.textContent = L.snap_tip;
 }
 
+
+// ═══════════════════════════════════════════════════════════════
+// 患者信息模块
+// ═══════════════════════════════════════════════════════════════
+let patientData = null;
+
+function openPatientModal() {
+  document.getElementById('patient-modal').classList.add('open');
+  document.body.style.overflow = 'hidden';
+  // 如果已有数据，填回表单
+  if (patientData) {
+    document.getElementById('pt-name').value      = patientData.name || '';
+    document.getElementById('pt-id').value        = patientData.id || '';
+    document.getElementById('pt-age').value       = patientData.age || '';
+    document.getElementById('pt-gender').value    = patientData.gender || '';
+    document.getElementById('pt-duration').value  = patientData.duration || '';
+    document.getElementById('pt-trend').value     = patientData.trend || '';
+    document.getElementById('pt-prev-med').value  = patientData.prevMed || '';
+    document.getElementById('pt-allergy').value   = patientData.allergy || '';
+    document.getElementById('pt-family').value    = patientData.family || 'none';
+    document.getElementById('pt-comorbid').value  = patientData.comorbid || '';
+    document.getElementById('pt-fitz').value      = patientData.fitz || '';
+    document.getElementById('pt-notes').value     = patientData.notes || '';
+    // multi-select symptoms
+    const sel = document.getElementById('pt-symptom');
+    const syms = patientData.symptoms || [];
+    Array.from(sel.options).forEach(o => o.selected = syms.includes(o.value));
+  }
+}
+function closePatientModal() {
+  document.getElementById('patient-modal').classList.remove('open');
+  document.body.style.overflow = '';
+}
+
+function savePatient() {
+  const name = document.getElementById('pt-name').value.trim();
+  if (!name) { alert('请填写患者姓名'); return; }
+  const sel = document.getElementById('pt-symptom');
+  const symptoms = Array.from(sel.selectedOptions).map(o => o.value);
+  const symLabels = {itch:'瘙痒',pain:'疼痛',burn:'灼热感',bleed:'出血',ooze:'渗出',scale:'脱屑',none:'无症状'};
+  const trendLabels = {stable:'稳定',worsening:'加重',improving:'好转',fluctuating:'反复波动',new:'新发'};
+  const genderLabels = {male:'男',female:'女',other:'其他'};
+  const familyLabels = {none:'无',eczema:'湿疹/特应性皮炎',psoriasis:'银屑病',cancer:'皮肤肿瘤',other:'其他'};
+
+  patientData = {
+    name,
+    id:        document.getElementById('pt-id').value.trim() || ('PT-' + Date.now().toString().slice(-6)),
+    age:       document.getElementById('pt-age').value,
+    gender:    document.getElementById('pt-gender').value,
+    duration:  document.getElementById('pt-duration').value.trim(),
+    trend:     document.getElementById('pt-trend').value,
+    symptoms,
+    prevMed:   document.getElementById('pt-prev-med').value.trim(),
+    allergy:   document.getElementById('pt-allergy').value.trim(),
+    family:    document.getElementById('pt-family').value,
+    comorbid:  document.getElementById('pt-comorbid').value.trim(),
+    fitz:      document.getElementById('pt-fitz').value,
+    notes:     document.getElementById('pt-notes').value.trim(),
+    // labels for display
+    genderLabel:  genderLabels[document.getElementById('pt-gender').value] || '',
+    trendLabel:   trendLabels[document.getElementById('pt-trend').value] || '',
+    symLabels:    symptoms.map(s => symLabels[s]||s).join('、') || '无',
+    familyLabel:  familyLabels[document.getElementById('pt-family').value] || '无',
+  };
+
+  // 更新侧栏显示
+  document.getElementById('pt-info-bar').style.display = 'block';
+  document.getElementById('pt-name-display').textContent = patientData.name;
+  let meta = '';
+  if (patientData.age) meta += `${patientData.age}岁`;
+  if (patientData.genderLabel) meta += ` · ${patientData.genderLabel}`;
+  if (patientData.id) meta += `
+${patientData.id}`;
+  if (patientData.duration) meta += `
+病程：${patientData.duration}`;
+  if (patientData.symLabels !== '无') meta += `
+症状：${patientData.symLabels}`;
+  document.getElementById('pt-meta-display').innerHTML = meta.replace(/
+/g, '<br>');
+
+  closePatientModal();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 处置方案模块
+// ═══════════════════════════════════════════════════════════════
+let currentRx = null;
+
+function openRxModal() {
+  document.getElementById('rx-modal').classList.add('open');
+  document.body.style.overflow = 'hidden';
+  if (currentRx) {
+    renderRx(currentRx);
+  } else if (lastR) {
+    generateRx();
+  }
+}
+function closeRxModal() {
+  document.getElementById('rx-modal').classList.remove('open');
+  document.body.style.overflow = '';
+}
+function printRx() { window.print(); }
+
+async function generateRx() {
+  if (!lastR) { alert('请先完成AI检测再生成处置方案'); return; }
+
+  // 显示模态框（如未打开）
+  document.getElementById('rx-modal').classList.add('open');
+  document.body.style.overflow = 'hidden';
+
+  // 显示加载状态
+  document.getElementById('rx-loading').style.display = 'flex';
+  document.getElementById('rx-content').style.display = 'none';
+
+  // 填写右侧摘要
+  fillRxSummary();
+
+  try {
+    const rx = await callClaudeRx(lastR, patientData);
+    currentRx = rx;
+    renderRx(rx);
+  } catch(e) {
+    console.error('RX generation error:', e);
+    currentRx = simulateRx(lastR, patientData);
+    renderRx(currentRx);
+  }
+}
+
+async function callClaudeRx(result, patient) {
+  const ptInfo = patient ? `
+患者信息：
+- 姓名：${patient.name}，年龄：${patient.age||'未知'}岁，性别：${patient.genderLabel||'未知'}
+- 病程：${patient.duration||'未知'}，发展趋势：${patient.trendLabel||'未知'}
+- 主要症状：${patient.symLabels||'未记录'}
+- 既往用药：${patient.prevMed||'无'}
+- 过敏史：${patient.allergy||'无'}
+- 家族史：${patient.familyLabel||'无'}
+- 合并疾病：${patient.comorbid||'无'}
+- Fitzpatrick分型：${patient.fitz||'未指定'}
+- 备注：${patient.notes||'无'}` : '患者信息：未录入';
+
+  const diseaseInfo = `
+AI检测结果：
+- 诊断：${result.diseaseName||'正常'}（${result.diseaseKey}）
+- 严重度：${SEV_LBL[result.severity||0]}
+- 置信度：${Math.round(result.conf*100)}%
+- EASI评分：${result.easiTotal||0}/72
+- 病灶面积：${result.area||'—'}
+- 红斑强度：${Math.round((result.erythemaIntensity||0)*100)}%
+- 色素评分：${result.pigmentScore||0}/3
+- 对称性：${result.symmetry||'—'}
+- 边界：${result.border||'—'}
+- 风险等级：${result.risk||'low'}
+- 需复核：${result.needReview?'是':'否'}`;
+
+  const sys = `你是一位经验丰富的皮肤科AI辅助系统。根据AI检测结果和患者信息，生成详细的临床处置方案。
+返回格式为纯JSON，不含任何Markdown标记。结构如下：
+{
+  "diagSummary": "<2-3句综合分析>",
+  "urgency": "routine"|"urgent"|"emergency",
+  "immediate": ["<措施1>","<措施2>",...],
+  "medications": [
+    {"name":"<药品名>","type":"topical"|"oral"|"injection","dosage":"<用法用量>","duration":"<疗程>","note":"<注意事项>"}
+  ],
+  "careInstructions": ["<护理1>","<护理2>",...],
+  "avoidList": ["<禁忌1>","<禁忌2>",...],
+  "followupPlan": {"firstVisit":"<几周后>","frequency":"<随访频率>","monitoring":"<监测内容>"},
+  "referral": {"needed":true|false,"specialty":"<科室>","reason":"<转诊原因>"},
+  "patientEducation": ["<教育要点1>","<教育要点2>",...],
+  "prognosis": "<预后评估1-2句>",
+  "redFlags": ["<警示症状1>","<警示症状2>"]
+}`;
+
+  const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type':'application/json','anthropic-dangerous-direct-browser-calls':'true' },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 2000,
+      system: sys,
+      messages: [{ role:'user', content: ptInfo + '
+' + diseaseInfo + '
+
+请生成完整处置方案，返回JSON。' }]
+    })
+  });
+  const data = await resp.json();
+  if (data.error) throw new Error(data.error.message);
+  const txt = data.content?.find(c=>c.type==='text')?.text||'';
+  return JSON.parse(txt.replace(/^```(?:json)?\s*/m,'').replace(/\s*```\s*$/m,'').trim());
+}
+
+function simulateRx(r, pt) {
+  const isDis = r.diagnosis === 'disease';
+  const key   = r.diseaseKey || 'normal';
+  const sev   = r.severity || 0;
+  const isHigh = r.risk === 'high' || sev >= 2;
+  const isCancer = ['melanoma','bcc','scc'].includes(key);
+
+  const medDB = {
+    eczema:            [{name:'糠酸莫米松乳膏',type:'topical',dosage:'薄涂患处，每日1次',duration:'2周',note:'避免长期大面积使用'},{name:'他克莫司软膏0.1%',type:'topical',dosage:'每日2次',duration:'4周',note:'初期可有轻微刺激感'},{name:'西替利嗪',type:'oral',dosage:'10mg，每晚1次',duration:'4周',note:'可能有嗜睡'}],
+    psoriasis:         [{name:'卡泊三醇软膏',type:'topical',dosage:'涂抹患处，每日2次',duration:'8周',note:'避免用于面部和皮肤皱褶处'},{name:'甲氨蝶呤',type:'oral',dosage:'7.5-25mg/周（需医师评估）',duration:'长期',note:'需定期检查肝功能'}],
+    acne_papulopustular:[{name:'过氧化苯甲酰凝胶2.5%',type:'topical',dosage:'薄涂，每晚1次',duration:'8-12周',note:'可能有皮肤刺激和干燥'},{name:'阿达帕林凝胶0.1%',type:'topical',dosage:'每晚薄涂，避开眼周',duration:'12周',note:'初期可能加重，4周后改善'}],
+    melanoma:          [{name:'立即转诊皮肤肿瘤科',type:'referral',dosage:'—',duration:'—',note:'不建议局部用药，需尽快活检'}],
+    bcc:               [{name:'立即转诊皮肤肿瘤科',type:'referral',dosage:'—',duration:'—',note:'需行莫氏显微手术评估'}],
+    atopic_dermatitis: [{name:'他克莫司软膏0.03-0.1%',type:'topical',dosage:'每日2次',duration:'6周',note:'适用于2岁以上患者'},{name:'度普利尤单抗',type:'injection',dosage:'300mg皮下注射，每2周1次',duration:'长期',note:'需皮肤科评估'}],
+  };
+
+  const meds = (isDis && medDB[key]) ? medDB[key] : [
+    {name:'保湿润肤霜',type:'topical',dosage:'每日2-3次',duration:'长期使用',note:'建议选择无香料低致敏产品'}
+  ];
+
+  return {
+    diagSummary: isDis
+      ? `AI检测提示${r.diseaseName||key}，EASI评分${r.easiTotal||0}分，严重程度为${SEV_LBL[sev]}。综合患者${pt?'年龄、病程及症状':' 病灶特征'}分析，${isCancer?'高度怀疑恶性病变，建议立即转诊':'建议结合临床及时处置'}。`
+      : '本次AI检测未见明显皮肤病变，皮肤状态整体良好，建议保持日常护肤，定期自我检查。',
+    urgency: isCancer ? 'emergency' : isHigh ? 'urgent' : 'routine',
+    immediate: isDis ? [
+      ...(isCancer ? ['⚠️ 立即停止所有局部治疗，紧急转诊皮肤肿瘤科'] : []),
+      ...(sev >= 1 ? ['温和清洁患处，避免摩擦和搔抓'] : []),
+      ...(r.symLabels?.includes('itch') || (pt?.symLabels?.includes('瘙痒')) ? ['冷敷患处以缓解瘙痒，避免热水烫洗'] : []),
+      '拍摄清晰照片记录病灶状态，便于随访对比',
+      ...(pt?.allergy ? [`注意避免含${pt.allergy}成分的药物和护肤品`] : []),
+    ] : ['维持日常清洁护理，使用温和无刺激产品'],
+    medications: meds,
+    careInstructions: [
+      '使用温和无皂基洁肤产品，水温37°C以下',
+      '沐浴后3分钟内涂抹保湿产品锁水',
+      '选择纯棉宽松衣物，减少皮肤摩擦',
+      ...(key.includes('acne')||key==='rosacea' ? ['防晒SPF30+，选择不致粉刺配方'] : ['涂抹防晒霜SPF30+以上']),
+      ...(pt?.comorbid?.includes('糖尿病') ? ['糖尿病患者注意伤口护理，防止感染'] : []),
+    ],
+    avoidList: [
+      '避免抓挠、摩擦病灶',
+      ...(pt?.allergy ? [`避免${pt.allergy}及同类药物`] : []),
+      '避免使用含酒精、香料的护肤品',
+      ...(key==='rosacea' ? ['避免辛辣食物、酒精、极端温度'] : []),
+      ...(key.includes('tinea')||key==='candidiasis' ? ['保持患处干燥，避免密不透气的衣物'] : []),
+      ...(isCancer ? ['禁止自行处理或切除病变'] : []),
+    ],
+    followupPlan: {
+      firstVisit: isCancer ? '48小时内' : isHigh ? '1周内' : sev >= 1 ? '2-4周' : '4-8周',
+      frequency: isCancer ? '每周（肿瘤科随访）' : isHigh ? '每2周' : '每4-8周',
+      monitoring: isCancer
+        ? '皮肤镜、活检病理、淋巴结检查'
+        : `EASI评分变化、病灶面积和色泽变化${r.needReview ? '、复核AI诊断结果' : ''}`
+    },
+    referral: {
+      needed: isCancer || isHigh,
+      specialty: isCancer ? '皮肤肿瘤科 / 整形外科' : isHigh ? '皮肤科专科门诊' : '',
+      reason: isCancer
+        ? '疑似恶性黑色素瘤/皮肤癌，需组织活检及病理确诊'
+        : isHigh ? '病灶严重，建议专科进一步评估和治疗' : ''
+    },
+    patientEducation: [
+      '了解并识别病情加重的警示信号（如面积扩大、疼痛加重、出血）',
+      '坚持按疗程用药，不可自行停药或减量',
+      ...(key.includes('acne') ? ['保持充足睡眠，减少高糖高油饮食'] : []),
+      ...(key.includes('tinea')||key==='candidiasis' ? ['避免共用毛巾、衣物等个人用品'] : []),
+      '避免紫外线直射，外出做好防晒',
+      '保持心理健康，减少焦虑对皮肤的影响',
+    ],
+    prognosis: isDis
+      ? (isCancer ? '预后取决于分期，早期发现治愈率较高，延误诊治预后较差。' : sev>=2 ? '积极治疗后多数患者可在4-12周内明显改善，部分慢性病种需长期管理。' : '经规范治疗，预后良好，2-8周内可明显改善。')
+      : '皮肤状态良好，注意日常防护，定期复查。',
+    redFlags: [
+      ...(isCancer ? ['病灶快速增大、形态不对称','边界不规则变化或颜色改变','出现溃疡、出血不止'] : []),
+      '出现发热、皮疹迅速扩散至全身',
+      '患处剧烈疼痛或出现明显感染征象（化脓、红肿热痛）',
+      ...(pt?.comorbid?.includes('糖尿病') ? ['糖尿病患者：伤口不愈合超过1周'] : []),
+    ].filter(Boolean)
+  };
+}
+
+function fillRxSummary() {
+  const r = lastR;
+  const pt = patientData;
+
+  // 右侧患者卡
+  const ptCard = document.getElementById('rx-pt-card');
+  if (pt) {
+    ptCard.innerHTML = `
+      <b>${pt.name}</b>（${pt.age||'—'}岁 ${pt.genderLabel||''}）<br>
+      病历号：${pt.id||'—'}<br>
+      病程：${pt.duration||'—'}<br>
+      主诉：${pt.symLabels||'—'}<br>
+      过敏：${pt.allergy||'无'}<br>
+      合并症：${pt.comorbid||'无'}`;
+  } else {
+    ptCard.innerHTML = '<span style="color:var(--text3)">未录入患者信息</span>';
+  }
+
+  // 右侧检测结果
+  document.getElementById('rx-result-card').innerHTML = r ? `
+    <b style="color:${r.color}">${r.diseaseName||'正常'}</b><br>
+    严重度：${SEV_LBL[r.severity||0]}<br>
+    置信度：${Math.round((r.conf||0)*100)}%<br>
+    风险：${r.risk||'—'}<br>
+    部位：${REG_LBL[r.region]||r.region||'—'}` : '—';
+
+  // 右侧EASI
+  document.getElementById('rx-easi-card').innerHTML = r ? `
+    EASI总分：<b style="color:${r.easiTotal>20?'#ef4444':r.easiTotal>10?'#f59e0b':'#10b981'}">${r.easiTotal||0}/72</b><br>
+    面积评分：${r.easiArea||0}/6<br>
+    红斑强度：${Math.round((r.erythemaIntensity||0)*100)}%<br>
+    色素评分：${r.pigmentScore||0}/3<br>
+    病灶面积：${r.area||'—'}` : '—';
+
+  // 风险
+  const riskColors = {low:'#10b981', moderate:'#f59e0b', high:'#ef4444'};
+  const riskTexts  = {low:'低风险', moderate:'中等风险', high:'高风险'};
+  document.getElementById('rx-risk-body').innerHTML = r ? `
+    <span style="font-size:14px;font-weight:800;color:${riskColors[r.risk||'low']}">${riskTexts[r.risk||'low']}</span><br>
+    对称性：${r.symmetry||'—'}<br>
+    边界：${r.border||'—'}<br>
+    色泽：${r.colorUniform||'—'}<br>
+    ${r.needReview ? '<span style="color:#f59e0b;font-weight:700">⚠️ 建议人工复核</span>' : '✅ 结果可信'}` : '—';
+
+  // 头部副标题
+  document.getElementById('rx-header-sub').textContent =
+    r ? `${r.diseaseName||'正常'} · ${pt?pt.name:'未知患者'} · ${new Date().toLocaleDateString()}` : '请先完成AI检测';
+}
+
+function renderRx(rx) {
+  document.getElementById('rx-loading').style.display = 'none';
+  document.getElementById('rx-content').style.display = 'block';
+
+  // 诊断摘要
+  document.getElementById('rx-diag-body').innerHTML = `
+    <p style="margin-bottom:8px">${rx.diagSummary||''}</p>
+    ${rx.urgency==='emergency' ? '<div class="rx-urgent">🚨 紧急：需立即就医！</div>' :
+      rx.urgency==='urgent'    ? '<div class="rx-warn">⚠️ 需尽快（1周内）就医处置</div>' :
+      '<div style="background:#d1fae5;border:1px solid #6ee7b7;border-radius:8px;padding:8px 10px;font-size:11px;color:#065f46">✅ 常规处置</div>'}
+    ${rx.prognosis ? `<p style="margin-top:8px;font-size:11px;color:var(--text3)">预后：${rx.prognosis}</p>` : ''}`;
+
+  // 即时措施
+  const immEl = document.getElementById('rx-immediate-body');
+  immEl.innerHTML = (rx.immediate||[]).map((item,i)=>`
+    <div class="rx-item">
+      <span class="rx-num" style="background:${i===0&&rx.urgency==='emergency'?'#ef4444':'var(--blue)'}">${i+1}</span>
+      <span>${item}</span>
+    </div>`).join('');
+
+  // 药物
+  const medEl = document.getElementById('rx-medication-body');
+  const typeColors = {topical:'#3b82f6', oral:'#10b981', injection:'#8b5cf6', referral:'#ef4444'};
+  const typeLabels = {topical:'外用', oral:'口服', injection:'注射', referral:'转诊'};
+  medEl.innerHTML = (rx.medications||[]).map((m,i)=>`
+    <div class="rx-item">
+      <span class="rx-num">${i+1}</span>
+      <div style="flex:1">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
+          <b style="font-size:12px">${m.name}</b>
+          <span class="rx-tag" style="background:${typeColors[m.type]||'#64748b'}20;color:${typeColors[m.type]||'#64748b'}">${typeLabels[m.type]||m.type}</span>
+        </div>
+        <div style="color:var(--text3)">用法：${m.dosage}　疗程：${m.duration}</div>
+        ${m.note ? `<div style="color:#f59e0b;font-size:10px;margin-top:2px">⚠️ ${m.note}</div>` : ''}
+      </div>
+    </div>`).join('');
+
+  // 护理
+  const careEl = document.getElementById('rx-care-body');
+  const avoidHtml = (rx.avoidList||[]).length ? `
+    <div style="margin-top:8px;padding:8px;background:#fef3c7;border-radius:7px;border:1px solid #fcd34d">
+      <div style="font-size:10px;font-weight:700;color:#92400e;margin-bottom:4px">🚫 避免事项</div>
+      ${(rx.avoidList||[]).map(a=>`<div style="font-size:11px;color:#92400e">• ${a}</div>`).join('')}
+    </div>` : '';
+  careEl.innerHTML = (rx.careInstructions||[]).map((item,i)=>`
+    <div class="rx-item">
+      <span class="rx-num" style="background:#10b981">${i+1}</span>
+      <span>${item}</span>
+    </div>`).join('') + avoidHtml;
+
+  // 随访
+  const fu = rx.followupPlan||{};
+  document.getElementById('rx-followup-body').innerHTML = `
+    <div class="rx-item"><span class="rx-num" style="background:#8b5cf6">1</span><span>首次复诊：<b>${fu.firstVisit||'4周后'}</b></span></div>
+    <div class="rx-item"><span class="rx-num" style="background:#8b5cf6">2</span><span>随访频率：${fu.frequency||'视情况而定'}</span></div>
+    <div class="rx-item"><span class="rx-num" style="background:#8b5cf6">3</span><span>监测重点：${fu.monitoring||'病灶变化'}</span></div>`;
+
+  // 转诊
+  const refCard = document.getElementById('rx-referral');
+  if (rx.referral?.needed) {
+    refCard.style.display = 'block';
+    document.getElementById('rx-referral-body').innerHTML = `
+      <div class="rx-urgent">🏥 建议转诊至：<b>${rx.referral.specialty||'专科'}</b></div>
+      <p style="margin-top:8px;font-size:12px">${rx.referral.reason||''}</p>`;
+  } else { refCard.style.display = 'none'; }
+
+  // 患者教育
+  document.getElementById('rx-education-body').innerHTML = (rx.patientEducation||[]).map((item,i)=>`
+    <div class="rx-item">
+      <span class="rx-num" style="background:#f59e0b">${i+1}</span>
+      <span>${item}</span>
+    </div>`).join('') + (rx.redFlags?.length ? `
+    <div style="margin-top:8px;padding:8px;background:#fee2e2;border-radius:7px;border:1px solid #fca5a5">
+      <div style="font-size:10px;font-weight:700;color:#991b1b;margin-bottom:4px">🚨 如出现以下症状请立即就医</div>
+      ${rx.redFlags.map(f=>`<div style="font-size:11px;color:#991b1b">• ${f}</div>`).join('')}
+    </div>` : '');
+
+  // 更新侧栏预览
+  document.getElementById('rx-entry-card').style.display = 'block';
+  document.getElementById('rx-preview').innerHTML =
+    `<span style="color:${lastR?.color||'#10b981'};font-weight:700">${lastR?.diseaseName||'正常'}</span>　${SEV_LBL[lastR?.severity||0]}　EASI: ${lastR?.easiTotal||0}`;
+}
+
+// 检测完成后自动触发方案预生成
+const _origFinish = finishAnalysis;
+function finishAnalysis(r, elapsed) {
+  _origFinish(r, elapsed);
+  // 显示处置方案入口
+  document.getElementById('rx-entry-card').style.display = 'block';
+  document.getElementById('rx-preview').innerHTML =
+    `<span style="color:${r.color};font-weight:700">${r.diseaseName||'正常'}</span>　${SEV_LBL[r.severity||0]}　EASI: ${r.easiTotal||0}<br>
+     <span style="color:var(--text3);font-size:10px">点击查看完整处置方案</span>`;
+  // 后台预生成方案（不打开模态框）
+  callClaudeRx(r, patientData).then(rx=>{ currentRx=rx; }).catch(()=>{ currentRx=simulateRx(r,patientData); });
+}
+
 </script>
 <style>
 :root {
@@ -1118,6 +1537,131 @@ tr:hover td{background:var(--bg)}
 .lang-btn:hover{background:rgba(255,255,255,.18);color:#fff}
 .lang-btn.active{background:var(--accent);color:var(--navy);border-color:var(--accent)}
 
+
+/* ═══════════ 患者信息 & 处理方案 ═══════════ */
+/* 患者信息面板 */
+#patient-modal {
+  display:none;position:fixed;inset:0;z-index:400;
+  background:rgba(7,20,40,.75);backdrop-filter:blur(6px);
+  align-items:center;justify-content:center;
+}
+#patient-modal.open{display:flex}
+#pm-box {
+  background:var(--white);border-radius:16px;
+  box-shadow:0 20px 60px rgba(7,20,40,.45);
+  width:min(580px,94vw);max-height:90vh;
+  display:flex;flex-direction:column;overflow:hidden;
+  border:1px solid var(--border);
+}
+#pm-header {
+  background:linear-gradient(135deg,var(--navy),var(--navy2));
+  padding:14px 20px;display:flex;align-items:center;gap:10px;
+}
+#pm-header h2{font-family:var(--fone);font-size:18px;font-weight:700;color:#fff;letter-spacing:2px;flex:1}
+#pm-header h2 span{color:var(--accent)}
+#pm-body{padding:18px 20px;overflow-y:auto;flex:1}
+#pm-footer{padding:12px 20px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;background:var(--bg)}
+
+/* 表单样式 */
+.fm-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}
+.fm-row.full{grid-template-columns:1fr}
+.fm-group{display:flex;flex-direction:column;gap:4px}
+.fm-label{font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.8px}
+.fm-input,.fm-select,.fm-textarea{
+  padding:7px 10px;border-radius:7px;border:1.5px solid var(--border);
+  font-size:12px;font-family:var(--font);color:var(--text);
+  background:var(--white);transition:border-color .15s;
+}
+.fm-input:focus,.fm-select:focus,.fm-textarea:focus{
+  outline:none;border-color:var(--blue3);box-shadow:0 0 0 3px rgba(59,130,246,.12)
+}
+.fm-textarea{resize:vertical;min-height:64px;line-height:1.5}
+.fm-section{font-size:11px;font-weight:700;color:var(--blue2);margin:12px 0 8px;
+  padding-bottom:4px;border-bottom:1.5px solid var(--bg3);
+  display:flex;align-items:center;gap:6px}
+
+/* 患者信息卡（侧栏小卡片） */
+#pt-info-bar{
+  background:linear-gradient(135deg,#eff6ff,#dbeafe);
+  border:1.5px solid var(--accent);border-radius:10px;
+  padding:10px 12px;margin:0 14px 0;font-size:11px;
+  display:none;
+}
+#pt-info-bar .pt-name{font-size:14px;font-weight:800;color:var(--navy);margin-bottom:3px}
+#pt-info-bar .pt-meta{color:var(--text3);line-height:1.7}
+#pt-info-bar .pt-edit{font-size:10px;color:var(--blue);cursor:pointer;font-weight:700;float:right;margin-top:-2px}
+#pt-info-bar .pt-edit:hover{text-decoration:underline}
+
+/* ═══════════ 处理方案模态框 ═══════════ */
+#rx-modal {
+  display:none;position:fixed;inset:0;z-index:450;
+  background:rgba(7,20,40,.8);backdrop-filter:blur(8px);
+  align-items:center;justify-content:center;
+}
+#rx-modal.open{display:flex}
+#rx-box {
+  background:var(--white);border-radius:16px;
+  box-shadow:0 24px 70px rgba(7,20,40,.5);
+  width:min(780px,96vw);max-height:92vh;
+  display:flex;flex-direction:column;overflow:hidden;
+  border:1px solid rgba(56,189,248,.2);
+}
+#rx-header {
+  background:linear-gradient(135deg,var(--navy) 0%,var(--navy2) 60%,var(--navy3) 100%);
+  padding:14px 20px;display:flex;align-items:center;gap:12px;flex-shrink:0;
+}
+#rx-header h2{font-family:var(--fone);font-size:20px;font-weight:700;color:#fff;letter-spacing:2px;flex:1;line-height:1.1}
+#rx-header h2 small{display:block;font-size:11px;letter-spacing:1px;color:var(--accent2);font-family:var(--font);margin-top:1px}
+#rx-body{display:flex;flex:1;overflow:hidden;min-height:0}
+#rx-left{flex:1;padding:16px;overflow-y:auto;display:flex;flex-direction:column;gap:10px;min-width:0}
+#rx-right{width:240px;background:var(--bg);border-left:1px solid var(--border);padding:12px;overflow-y:auto;flex-shrink:0}
+#rx-footer{padding:10px 16px;border-top:1px solid var(--border);display:flex;gap:8px;align-items:center;background:var(--white);flex-shrink:0}
+
+/* 处理方案卡 */
+.rx-card{
+  background:var(--white);border:1px solid var(--border);border-radius:10px;
+  padding:12px 14px;
+}
+.rx-card h4{
+  font-size:12px;font-weight:800;color:var(--navy);margin-bottom:8px;
+  display:flex;align-items:center;gap:6px;
+}
+.rx-card h4 .rx-icon{font-size:16px}
+.rx-item{
+  display:flex;align-items:flex-start;gap:8px;
+  padding:6px 8px;border-radius:7px;margin-bottom:5px;
+  background:var(--bg);border:1px solid var(--border);
+  font-size:11px;line-height:1.55;
+}
+.rx-item .rx-num{
+  min-width:18px;height:18px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  font-size:10px;font-weight:800;color:#fff;flex-shrink:0;
+  background:var(--blue);margin-top:1px;
+}
+.rx-badge{
+  display:inline-flex;align-items:center;padding:2px 8px;border-radius:10px;
+  font-size:10px;font-weight:700;margin:2px;
+}
+.rx-warn{background:#fef3c7;border:1px solid #fcd34d;border-radius:8px;padding:8px 10px;font-size:11px;color:#92400e}
+.rx-urgent{background:#fee2e2;border:1px solid #fca5a5;border-radius:8px;padding:8px 10px;font-size:11px;color:#991b1b;font-weight:700}
+.rx-tag{display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;margin:2px}
+
+/* 加载动画（处理方案生成中） */
+#rx-loading{
+  display:none;flex-direction:column;align-items:center;justify-content:center;
+  gap:14px;padding:40px;
+}
+.rx-spin{width:40px;height:40px;border:3px solid var(--border);border-top-color:var(--blue);border-radius:50%;animation:spin .8s linear infinite}
+#rx-content{display:none}
+
+/* 打印样式 */
+@media print {
+  #topbar,#sidebar,#vbar,#stats,#bottom,#rx-footer,#rx-right { display:none!important; }
+  #rx-box { box-shadow:none;border:none;max-height:none }
+  #rx-body { overflow:visible }
+}
+
 </style>
 </head>
 <body>
@@ -1147,6 +1691,20 @@ tr:hover td{background:var(--bg)}
 <!-- ── SIDEBAR ── -->
 <aside id="sidebar">
 
+
+  <!-- 患者信息 -->
+  <div class="sb-sec" style="background:linear-gradient(135deg,#f0fdf4,#dcfce7);border-bottom:2px solid #10b981">
+    <h4 style="color:#065f46">👤 患者信息</h4>
+    <button class="btn btn-w" onclick="openPatientModal()"
+      style="background:linear-gradient(135deg,#059669,#10b981);color:#fff;font-size:12px;padding:8px">
+      ✏️ 录入 / 编辑患者信息
+    </button>
+  </div>
+  <div id="pt-info-bar">
+    <span class="pt-edit" onclick="openPatientModal()">编辑</span>
+    <div class="pt-name" id="pt-name-display">—</div>
+    <div class="pt-meta" id="pt-meta-display"></div>
+  </div>
 
   <!-- 实时摄像头监测 -->
   <div class="sb-sec" style="background:linear-gradient(135deg,#eff6ff,#dbeafe);border-bottom:2px solid var(--accent)">
@@ -1359,6 +1917,19 @@ tr:hover td{background:var(--bg)}
       <div class="card">
         <h5 data-i18n="conf_chart">置信度分布</h5>
         <canvas id="conf-chart" style="max-height:130px"></canvas>
+      </div>
+
+
+      <!-- 处理方案 -->
+      <div class="card" id="rx-entry-card" style="display:none;background:linear-gradient(135deg,#eff6ff,#dbeafe);border-color:var(--accent)">
+        <h5 style="color:var(--blue2)">💊 处理方案</h5>
+        <div id="rx-preview" style="font-size:11px;color:var(--text3);margin-bottom:8px">完成AI检测后自动生成对应处置方案</div>
+        <button class="btn btn-p btn-w" onclick="openRxModal()" style="font-size:12px">
+          📋 查看完整处置方案
+        </button>
+        <button class="btn btn-w" onclick="generateRx()" style="font-size:12px;margin-top:6px;background:linear-gradient(135deg,var(--accent),#0ea5e9);color:var(--navy);font-weight:800">
+          ✨ AI 重新生成方案
+        </button>
       </div>
 
       <!-- Registration result -->
@@ -2288,6 +2859,242 @@ function buildSpectrumGrid() {
     </div><!-- end cam-body -->
   </div><!-- end cam-box -->
 </div><!-- end cam-modal -->
+
+
+<!-- ═══════════ 患者信息录入模态框 ═══════════ -->
+<div id="patient-modal">
+  <div id="pm-box">
+    <div id="pm-header">
+      <h2>👤 患者信息录入</h2>
+      <button class="cam-close" onclick="closePatientModal()">✕</button>
+    </div>
+    <div id="pm-body">
+
+      <div class="fm-section">🪪 基本信息</div>
+      <div class="fm-row">
+        <div class="fm-group">
+          <label class="fm-label">患者姓名 *</label>
+          <input class="fm-input" id="pt-name" placeholder="请输入姓名" required>
+        </div>
+        <div class="fm-group">
+          <label class="fm-label">病历号</label>
+          <input class="fm-input" id="pt-id" placeholder="例：PT-20240001">
+        </div>
+      </div>
+      <div class="fm-row">
+        <div class="fm-group">
+          <label class="fm-label">年龄</label>
+          <input class="fm-input" id="pt-age" type="number" placeholder="岁" min="0" max="120">
+        </div>
+        <div class="fm-group">
+          <label class="fm-label">性别</label>
+          <select class="fm-select" id="pt-gender">
+            <option value="">请选择</option>
+            <option value="male">男</option>
+            <option value="female">女</option>
+            <option value="other">其他</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="fm-section">🩺 临床信息</div>
+      <div class="fm-row">
+        <div class="fm-group">
+          <label class="fm-label">病变持续时间</label>
+          <input class="fm-input" id="pt-duration" placeholder="例：3周、2个月">
+        </div>
+        <div class="fm-group">
+          <label class="fm-label">病变发展趋势</label>
+          <select class="fm-select" id="pt-trend">
+            <option value="">请选择</option>
+            <option value="stable">稳定</option>
+            <option value="worsening">加重</option>
+            <option value="improving">好转</option>
+            <option value="fluctuating">反复波动</option>
+            <option value="new">新发</option>
+          </select>
+        </div>
+      </div>
+      <div class="fm-row">
+        <div class="fm-group">
+          <label class="fm-label">主要症状</label>
+          <select class="fm-select" id="pt-symptom" multiple size="4" style="height:auto">
+            <option value="itch">瘙痒</option>
+            <option value="pain">疼痛</option>
+            <option value="burn">灼热感</option>
+            <option value="bleed">出血</option>
+            <option value="ooze">渗出</option>
+            <option value="scale">脱屑</option>
+            <option value="none">无症状</option>
+          </select>
+          <span style="font-size:10px;color:var(--text3)">可多选</span>
+        </div>
+        <div class="fm-group">
+          <label class="fm-label">既往用药</label>
+          <textarea class="fm-textarea" id="pt-prev-med" placeholder="例：糠酸莫米松乳膏、他克莫司软膏等"></textarea>
+        </div>
+      </div>
+
+      <div class="fm-section">⚕️ 过敏 & 病史</div>
+      <div class="fm-row">
+        <div class="fm-group">
+          <label class="fm-label">已知过敏史</label>
+          <input class="fm-input" id="pt-allergy" placeholder="例：青霉素、磺胺类">
+        </div>
+        <div class="fm-group">
+          <label class="fm-label">皮肤病家族史</label>
+          <select class="fm-select" id="pt-family">
+            <option value="none">无</option>
+            <option value="eczema">湿疹/特应性皮炎</option>
+            <option value="psoriasis">银屑病</option>
+            <option value="cancer">皮肤肿瘤</option>
+            <option value="other">其他</option>
+          </select>
+        </div>
+      </div>
+      <div class="fm-row">
+        <div class="fm-group">
+          <label class="fm-label">合并基础疾病</label>
+          <input class="fm-input" id="pt-comorbid" placeholder="例：糖尿病、免疫抑制状态">
+        </div>
+        <div class="fm-group">
+          <label class="fm-label">Fitzpatrick 肤色分型</label>
+          <select class="fm-select" id="pt-fitz">
+            <option value="">未指定</option>
+            <option value="I">I型 – 极白，总是灼伤</option>
+            <option value="II">II型 – 白，经常灼伤</option>
+            <option value="III">III型 – 中等，有时灼伤</option>
+            <option value="IV">IV型 – 橄榄色，很少灼伤</option>
+            <option value="V">V型 – 棕色，极少灼伤</option>
+            <option value="VI">VI型 – 深棕/黑，从不灼伤</option>
+          </select>
+        </div>
+      </div>
+      <div class="fm-row full">
+        <div class="fm-group">
+          <label class="fm-label">备注 / 其他</label>
+          <textarea class="fm-textarea" id="pt-notes" placeholder="其他临床备注、患者主诉等…"></textarea>
+        </div>
+      </div>
+
+    </div>
+    <div id="pm-footer">
+      <button class="btn btn-o" onclick="closePatientModal()">取消</button>
+      <button class="btn btn-p" onclick="savePatient()">✅ 保存患者信息</button>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════ 处理方案模态框 ═══════════ -->
+<div id="rx-modal">
+  <div id="rx-box">
+    <div id="rx-header">
+      <h2>
+        💊 AI 处置方案
+        <small id="rx-header-sub">请先完成AI检测</small>
+      </h2>
+      <button class="btn btn-sm" onclick="printRx()" style="background:rgba(255,255,255,.12);color:#fff;border:1px solid rgba(255,255,255,.2)">🖨️ 打印</button>
+      <button class="cam-close" onclick="closeRxModal()" style="margin-left:6px">✕</button>
+    </div>
+
+    <div id="rx-body">
+      <!-- 左：方案内容 -->
+      <div id="rx-left">
+
+        <!-- 加载中 -->
+        <div id="rx-loading">
+          <div class="rx-spin"></div>
+          <div style="font-size:13px;color:var(--blue);font-weight:600">AI 正在生成个性化处置方案…</div>
+          <div style="font-size:11px;color:var(--text3)">综合患者信息 · 病灶特征 · EASI评分</div>
+        </div>
+
+        <!-- 内容区 -->
+        <div id="rx-content">
+
+          <!-- 诊断摘要 -->
+          <div class="rx-card" id="rx-diag-summary">
+            <h4><span class="rx-icon">🩺</span> 诊断摘要</h4>
+            <div id="rx-diag-body" style="font-size:12px;color:var(--text3);line-height:1.7"></div>
+          </div>
+
+          <!-- 即时处置 -->
+          <div class="rx-card" id="rx-immediate">
+            <h4><span class="rx-icon">⚡</span> 即时处置措施</h4>
+            <div id="rx-immediate-body"></div>
+          </div>
+
+          <!-- 药物治疗 -->
+          <div class="rx-card" id="rx-medication">
+            <h4><span class="rx-icon">💊</span> 推荐用药方案</h4>
+            <div id="rx-medication-body"></div>
+            <div class="rx-warn" style="margin-top:8px">⚠️ 以下用药建议仅供参考，须经执业医师确认后方可使用</div>
+          </div>
+
+          <!-- 护理指导 -->
+          <div class="rx-card" id="rx-care">
+            <h4><span class="rx-icon">🧴</span> 皮肤护理指导</h4>
+            <div id="rx-care-body"></div>
+          </div>
+
+          <!-- 随访计划 -->
+          <div class="rx-card" id="rx-followup">
+            <h4><span class="rx-icon">📅</span> 随访复诊计划</h4>
+            <div id="rx-followup-body"></div>
+          </div>
+
+          <!-- 转诊建议 -->
+          <div class="rx-card" id="rx-referral" style="display:none">
+            <h4><span class="rx-icon">🏥</span> 转诊建议</h4>
+            <div id="rx-referral-body"></div>
+          </div>
+
+          <!-- 患者教育 -->
+          <div class="rx-card" id="rx-education">
+            <h4><span class="rx-icon">📚</span> 患者健康教育</h4>
+            <div id="rx-education-body"></div>
+          </div>
+
+        </div><!-- end rx-content -->
+      </div><!-- end rx-left -->
+
+      <!-- 右：患者信息摘要 + 指标 -->
+      <div id="rx-right">
+        <div style="font-size:12px;font-weight:800;color:var(--navy);margin-bottom:10px">📋 本次就诊摘要</div>
+
+        <!-- 患者卡 -->
+        <div style="background:var(--white);border:1px solid var(--border);border-radius:9px;padding:10px;margin-bottom:8px">
+          <div style="font-size:10px;font-weight:700;color:var(--text3);margin-bottom:6px">患者信息</div>
+          <div id="rx-pt-card" style="font-size:11px;color:var(--text);line-height:1.8"></div>
+        </div>
+
+        <!-- 检测结果 -->
+        <div style="background:var(--white);border:1px solid var(--border);border-radius:9px;padding:10px;margin-bottom:8px">
+          <div style="font-size:10px;font-weight:700;color:var(--text3);margin-bottom:6px">AI检测结果</div>
+          <div id="rx-result-card" style="font-size:11px;color:var(--text);line-height:1.8"></div>
+        </div>
+
+        <!-- EASI指标 -->
+        <div style="background:var(--white);border:1px solid var(--border);border-radius:9px;padding:10px;margin-bottom:8px">
+          <div style="font-size:10px;font-weight:700;color:var(--text3);margin-bottom:6px">EASI 量化指标</div>
+          <div id="rx-easi-card" style="font-size:11px;color:var(--text);line-height:1.8"></div>
+        </div>
+
+        <!-- 风险评估 -->
+        <div id="rx-risk-card" style="background:var(--white);border:1px solid var(--border);border-radius:9px;padding:10px">
+          <div style="font-size:10px;font-weight:700;color:var(--text3);margin-bottom:6px">风险评估</div>
+          <div id="rx-risk-body" style="font-size:11px;line-height:1.8"></div>
+        </div>
+      </div>
+    </div><!-- end rx-body -->
+
+    <div id="rx-footer">
+      <span style="font-size:10px;color:var(--text3);flex:1">⚕️ 本方案由AI辅助生成，仅供临床参考，最终诊疗决策须由执业医师负责</span>
+      <button class="btn btn-o btn-sm" onclick="generateRx()">🔄 重新生成</button>
+      <button class="btn btn-p btn-sm" onclick="printRx()">🖨️ 打印方案</button>
+    </div>
+  </div>
+</div>
 
 </body>
 </html>
