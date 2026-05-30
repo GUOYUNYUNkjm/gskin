@@ -2094,6 +2094,15 @@ tr:hover td{background:var(--bg)}
 }
 
 </style>
+
+<!-- ===== GSkin PWA: 可安装 App 配置（开始）===== -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#6C5CE7">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="GSkin">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<!-- ===== GSkin PWA 配置（结束）===== -->
 </head>
 <body>
 
@@ -3989,5 +3998,17 @@ function buildSpectrumGrid() {
   </div>
 </div>
 
+
+<!-- ===== GSkin PWA: 注册离线/安装能力（开始）===== -->
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () {
+      navigator.serviceWorker.register('service-worker.js')
+        .then(function (reg) { console.log('GSkin SW registered:', reg.scope); })
+        .catch(function (err) { console.log('GSkin SW failed:', err); });
+    });
+  }
+</script>
+<!-- ===== GSkin PWA 注册（结束）===== -->
 </body>
 </html>
