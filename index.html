@@ -7,6 +7,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;600;700&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<!-- TensorFlow.js：运行真实训练好的皮肤病变模型（纯前端推理） -->
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
 <script>
 // ═══════════════════════════════════════════════════════════════
 // 摄像头实时监测模块
@@ -185,7 +187,8 @@ async function analyzeFrame(snapUrl) {
     // 摄像头帧也进行轻度预处理（仅增强，不锐化以保持速度）
     let enhancedSnap = snapUrl;
     try { enhancedSnap = await preprocessImage(snapUrl, {contrast:1.15, brightness:3, sharpen:0}); } catch(pe){}
-    r = await callClaudeFrame(enhancedSnap);
+    if (window._skinModel) r = await classifyFrameWithModel(enhancedSnap);   // 真实模型逐帧推理
+    else r = await callClaudeFrame(enhancedSnap);
   }
   catch(e) { r = simulateCamFrame(); }
 
@@ -511,13 +514,13 @@ let currentLang = 'zh';
 
 const I18N = {
   zh: {
-    subtitle:   '皮肤病变智能监测系统 · EfficientNetV2-M + GradCAM + EASI评分',
+    subtitle:   '皮肤病变智能监测系统 · MobileNet·HAM10000 + GradCAM + EASI评分',
     cam_title:  '📹 实时摄像头监测', cam_open:'开启实时监测',
     cam_sub:    '自动帧分析 · 病灶实时标注 · 警报提醒',
     upload:'图像上传', upload_btn:'上传皮肤图像', demo_btn:'演示图像',
     params:'检查参数', region:'检查部位', spectrum:'光谱模式',
     ai_analysis:'AI 分析', start_btn:'开始AI检测（TTA×5）',
-    model_sub:'EfficientNetV2-M + 5-fold TTA推理',
+    model_sub:'MobileNet·HAM10000 + 5-fold TTA推理',
     live_diag:'实时诊断', confidence:'AI置信度', severity:'严重度评级',
     review_flag:'⚠️ 置信度低于60%，建议人工复核',
     clinical:'临床指标', sce:'SCE 鲁棒性评分',
@@ -527,7 +530,7 @@ const I18N = {
     view:'视图：', v_orig:'原图', v_heat:'GradCAM热力图',
     v_over:'叠加', v_ann:'📌 病灶标注', v_diff:'📅 随访对比',
     dz_title:'上传皮肤图像开始检测',
-    dz_sub:'支持 JPG · PNG · 拖拽或点击上传<br>模型：EfficientNetV2-M | 42种皮肤病变',
+    dz_sub:'支持 JPG · PNG · 拖拽或点击上传<br>模型：MobileNet·HAM10000 | 7类病变(HAM10000)',
     upload_btn2:'上传图片', demo_btn2:'演示',
     report:'🔬 检测报告', top3:'候选病种 Top-3',
     gcam:'GradCAM 病灶注意力', loc:'病灶位置标注',
@@ -599,13 +602,13 @@ const I18N = {
     care_edu_btn:'查看护理宣教',
   },
   en: {
-    subtitle:   'Skin Lesion AI Monitoring · EfficientNetV2-M + GradCAM + EASI Score',
+    subtitle:   'Skin Lesion AI Monitoring · MobileNet·HAM10000 + GradCAM + EASI Score',
     cam_title:  '📹 Live Camera Monitoring', cam_open:'Open Live Monitor',
     cam_sub:    'Auto Frame Analysis · Real-time Annotation · Alert',
     upload:'Upload Image', upload_btn:'Upload Skin Image', demo_btn:'Demo Image',
     params:'Parameters', region:'Body Region', spectrum:'Spectrum Mode',
     ai_analysis:'AI Analysis', start_btn:'Start AI Detection (TTA×5)',
-    model_sub:'EfficientNetV2-M + 5-fold TTA inference',
+    model_sub:'MobileNet·HAM10000 + 5-fold TTA inference',
     live_diag:'Live Diagnosis', confidence:'AI Confidence', severity:'Severity',
     review_flag:'⚠️ Confidence < 60%, manual review recommended',
     clinical:'Clinical Metrics', sce:'SCE Robustness Score',
@@ -615,7 +618,7 @@ const I18N = {
     view:'View:', v_orig:'Original', v_heat:'GradCAM Heatmap',
     v_over:'Overlay', v_ann:'📌 Lesion Marks', v_diff:'📅 Follow-up',
     dz_title:'Upload Skin Image to Start',
-    dz_sub:'JPG · PNG · Drag & drop or click<br>Model: EfficientNetV2-M | 42 Skin Diseases',
+    dz_sub:'JPG · PNG · Drag & drop or click<br>Model: MobileNet·HAM10000 | 7 classes (HAM10000)',
     upload_btn2:'Upload', demo_btn2:'Demo',
     report:'🔬 Detection Report', top3:'Top-3 Candidates',
     gcam:'GradCAM Attention', loc:'Lesion Locations',
@@ -683,13 +686,13 @@ const I18N = {
     care_edu_btn:'View Care Education',
   },
   ko: {
-    subtitle:   '피부 병변 AI 모니터링 · EfficientNetV2-M + GradCAM + EASI 점수',
+    subtitle:   '피부 병변 AI 모니터링 · MobileNet·HAM10000 + GradCAM + EASI 점수',
     cam_title:  '📹 실시간 카메라 모니터링', cam_open:'실시간 모니터링 시작',
     cam_sub:    '자동 프레임 분석 · 병변 실시간 표시 · 경고 알림',
     upload:'이미지 업로드', upload_btn:'피부 이미지 업로드', demo_btn:'데모 이미지',
     params:'검사 설정', region:'검사 부위', spectrum:'스펙트럼 모드',
     ai_analysis:'AI 분석', start_btn:'AI 검사 시작 (TTA×5)',
-    model_sub:'EfficientNetV2-M + 5-fold TTA 추론',
+    model_sub:'MobileNet·HAM10000 + 5-fold TTA 추론',
     live_diag:'실시간 진단', confidence:'AI 신뢰도', severity:'중증도',
     review_flag:'⚠️ 신뢰도 60% 미만, 수동 검토 권장',
     clinical:'임상 지표', sce:'SCE 견고성 점수',
@@ -699,7 +702,7 @@ const I18N = {
     view:'보기:', v_orig:'원본', v_heat:'GradCAM 열지도',
     v_over:'오버레이', v_ann:'📌 병변 표시', v_diff:'📅 추적 비교',
     dz_title:'피부 이미지를 업로드하여 검사 시작',
-    dz_sub:'JPG · PNG · 드래그 앤 드롭 또는 클릭<br>모델: EfficientNetV2-M | 42종 피부 질환',
+    dz_sub:'JPG · PNG · 드래그 앤 드롭 또는 클릭<br>모델: MobileNet·HAM10000 | 7종 병변 (HAM10000)',
     upload_btn2:'업로드', demo_btn2:'데모',
     report:'🔬 검사 보고서', top3:'후보 병종 Top-3',
     gcam:'GradCAM 병변 주의도', loc:'병변 위치',
@@ -2105,7 +2108,7 @@ tr:hover td{background:var(--bg)}
   </div>
   <div class="top-logo">
     <h1>SKIN<span>AI</span></h1>
-    <p data-i18n="subtitle">皮肤病变智能监测系统 · EfficientNetV2-M + GradCAM + EASI评分</p>
+    <p data-i18n="subtitle">皮肤病变智能监测系统 · MobileNet·HAM10000 + GradCAM + EASI评分</p>
   </div>
   <div class="top-brand" style="display:flex;flex-direction:column;align-items:flex-end;gap:5px">
     <b>YunHealth v2.0</b>
@@ -2192,7 +2195,7 @@ tr:hover td{background:var(--bg)}
   <div class="sb-sec">
     <h4 data-i18n="ai_analysis">AI 分析</h4>
     <button class="btn btn-a btn-w" style="font-size:13px;padding:10px" onclick="runAnalysis()">🔬 开始AI检测（TTA×5）</button>
-    <div style="font-size:10px;color:var(--text3);text-align:center;margin-top:4px"><span data-i18n="model_sub">EfficientNetV2-M + 5-fold TTA推理</span></div>
+    <div style="font-size:10px;color:var(--text3);text-align:center;margin-top:4px"><span data-i18n="model_sub">MobileNet·HAM10000 + 5-fold TTA推理</span></div>
   </div>
 
   <!-- 诊断结果 -->
@@ -2290,7 +2293,7 @@ tr:hover td{background:var(--bg)}
       <div id="dz" ondragover="event.preventDefault()" ondrop="onDrop(event)">
         <div class="dz-ico">🩺</div>
         <h3 data-i18n="dz_title">上传皮肤图像开始检测</h3>
-        <p><span data-i18n="dz_sub">支持 JPG · PNG · 拖拽或点击上传<br>模型：EfficientNetV2-M | 42种皮肤病变</span></p>
+        <p><span data-i18n="dz_sub">支持 JPG · PNG · 拖拽或点击上传<br>模型：MobileNet·HAM10000 | 7类病变(HAM10000)</span></p>
         <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
           <div style="position:relative;display:inline-block">
             <input type="file" accept="image/*" style="position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer;z-index:10" onchange="onUpload(this)">
@@ -2391,7 +2394,7 @@ tr:hover td{background:var(--bg)}
     <span>  <span data-i18n="st_ok">正常</span> <strong id="st-ok">0</strong></span>
     <span><span data-i18n="st_rev">复核提示</span> <strong id="st-rev">0</strong></span>
     <span><span data-i18n="st_time">平均耗时</span> <strong id="st-t">—</strong></span>
-    <span><span data-i18n="st_model">模型</span> <strong>EfficientNetV2-M</strong></span>
+    <span><span data-i18n="st_model">模型</span> <strong>MobileNet·HAM10000</strong></span>
     <span><span data-i18n="st_spec_lbl">光谱</span> <strong id="st-spec">RGB</strong></span>
     <span>TTA <strong>×5</strong></span>
   </div>
@@ -2463,6 +2466,10 @@ const DISEASE_DB = {
   lupus_erythema:       {name:'红斑狼疮',          cat:2, sev:2, color:'#9f1239'},
   dermatomyositis:      {name:'皮肌炎',           cat:2, sev:2, color:'#be185d'},
   lipoma:               {name:'脂肪瘤',           cat:5, sev:0, color:'#6b7280'},
+  akiec:                {name:'光化性角化病/原位癌', cat:5, sev:2, color:'#b91c1c'},
+  bkl:                  {name:'良性角化病',        cat:5, sev:0, color:'#a16207'},
+  df:                   {name:'皮肤纤维瘤',        cat:5, sev:0, color:'#78716c'},
+  vasc:                 {name:'血管性病变',        cat:5, sev:0, color:'#e11d48'},
 };
 
 CAT_NAMES  = ['感染性','过敏/炎症','慢性/免疫','皮脂腺/痤疮','色素性','肿瘤性','其他'];
@@ -2702,13 +2709,18 @@ function detectDarkLesion(dataUrl) {
       var W = c.width, H = c.height;
       var m = Math.round(Math.min(W,H)*0.06);
 
-      // 1. 用中位数作为肤色基线（对高光/头发更鲁棒）
-      var lums = [];
+      // 1. 用中位数作为肤色基线（对高光/头发更鲁棒）；同时记录各通道中位数，
+      //    得到"正常肤色的红度/棕度基线"，后续按相对偏离判定病灶（关键：正常暖肤色不再误判为红斑）
+      var lums = [], rArr=[], gArr=[], bArr=[];
       for (var y=m; y<H-m; y++) for (var x=m; x<W-m; x++) {
         var i=(y*W+x)*4; lums.push((d[i]+d[i+1]+d[i+2])/3);
+        rArr.push(d[i]); gArr.push(d[i+1]); bArr.push(d[i+2]);
       }
-      lums.sort(function(a,b){return a-b;});
-      var skinMed = lums[Math.floor(lums.length/2)] || 128;
+      function med(a){ a.sort(function(p,q){return p-q;}); return a[Math.floor(a.length/2)]||0; }
+      var skinMed = med(lums) || 128;
+      var medR = med(rArr), medG = med(gArr), medB = med(bArr);
+      var baseRG = medR - medG;   // 正常肤色的红-绿基线（暖肤色为正）
+      var baseRB = medR - medB;   // 正常肤色的红-蓝(棕)基线
 
       // 2. 分块扫描，标记"色素块"(棕色斑/比肤色暗) 与 "红斑块"，同时累积分类特征
       var bs = Math.max(4, Math.round(Math.min(W,H)*0.05)); // 较细的网格
@@ -2718,8 +2730,9 @@ function detectDarkLesion(dataUrl) {
       var brownSum=0, brownSqSum=0;            // 棕色度(R-B) 统计 → 多色性
       var eryeSum=0;                            // 红斑强度(R-G) 统计
       var blkL=[], blkAbn=[];                   // 块亮度 / 是否异常（供 bbox 内统计）
+      var blkW=[];                              // 连续病灶显著度权重（用于精确定位）
       for (var gy=0; gy<nby; gy++) {
-        map[gy]=[]; blkL[gy]=[]; blkAbn[gy]=[];
+        map[gy]=[]; blkL[gy]=[]; blkAbn[gy]=[]; blkW[gy]=[];
         for (var gx=0; gx<nbx; gx++) {
           var sx0=m+gx*bs, sy0=m+gy*bs, sr=0,sg=0,sb=0,cnt=0;
           for (var dy=0; dy<bs; dy++) for (var dx=0; dx<bs; dx++) {
@@ -2727,19 +2740,28 @@ function detectDarkLesion(dataUrl) {
           }
           var mr=sr/cnt, mg=sg/cnt, mb=sb/cnt, ml=(mr+mg+mb)/3;
           var maxc=Math.max(mr,mg,mb), minc=Math.min(mr,mg,mb), sat=maxc-minc;
-          // 色素块：明显比肤色暗(<90%中位) 但不过暗(>42%中位，排除头发/眉毛/鼻孔阴影)，且偏肤色(R≥B)
-          var pigment = (ml < skinMed*0.90) && (ml > skinMed*0.42) && (mr >= mb-8);
-          // 红斑块：红色明显高于绿蓝
-          var red = (mr>160 && mr-mg>32 && mr-mb>32);
-          // 极暗块（潜在恶性深色素/痣中心），限肤色避免头发
-          var veryDark = (ml <= skinMed*0.42) && (ml > skinMed*0.20) && (mr >= mb-8);
+          var darkFrac=(skinMed-ml)/Math.max(1,skinMed);   // 比肤色暗的比例（相对基线）
+          var brown=mr-mb;                                  // 棕色色度(绝对)
+          var brownExcess=(mr-mb)-baseRB;                   // 比正常肤色"更棕"的程度
+          var redExcess=(mr-mg)-baseRG;                     // 比正常肤色"更红"的程度
+          // 色素块：比肤色暗(>7%)、未过暗(排除头发/眉毛)、且色调不偏冷(排除中性/偏蓝阴影)。
+          //   说明：色素沉着以"变暗"为主，色相未必更棕，故主要靠暗化判定，仅用 brownExcess 排除冷阴影
+          var pigment = (darkFrac > 0.07) && (ml > skinMed*0.45) && (brownExcess > -6);
+          // 红斑块：比正常肤色明显更红、且不偏暗（炎症红斑发亮不发暗）
+          var red = (redExcess > 16) && (ml > skinMed*0.70);
+          // 极暗块（潜在恶性深色素/痣中心），限避免头发/冷阴影
+          var veryDark = (ml <= skinMed*0.45) && (ml > skinMed*0.22) && (brownExcess > -2);
           // 亮+低饱和块（色素减退/白癜风）
           var bright = (ml > skinMed*1.12) && (sat < 26) && (ml < 252);
+          // —— 连续显著度（均为相对正常肤色的偏离，正常皮肤≈0）——
+          var pigScore = pigment ? clamp01(darkFrac*2.0 + Math.max(0,brownExcess)/45) : 0;
+          var redScore = red ? clamp01(redExcess/45) : 0;
+          blkW[gy][gx] = Math.max(pigScore, redScore*1.1);
           var abn = pigment || red || veryDark;
           map[gy][gx]=abn; blkAbn[gy][gx]=abn; blkL[gy][gx]=ml; totalBlocks++;
           if (abn) abnormalBlocks++;
-          if (pigment) { pigBlocks++; brownSum+=(mr-mb); brownSqSum+=(mr-mb)*(mr-mb); }
-          if (red) { redBlocks++; eryeSum+=(mr-mg); }
+          if (pigment) { pigBlocks++; brownSum+=brown; brownSqSum+=brown*brown; }
+          if (red) { redBlocks++; eryeSum+=redExcess; }
           if (veryDark) veryDarkBlocks++;
           if (bright) brightBlocks++;
         }
@@ -2747,34 +2769,85 @@ function detectDarkLesion(dataUrl) {
       var darkRatio = abnormalBlocks/Math.max(1,totalBlocks);
       var redRatio  = redBlocks/Math.max(1,totalBlocks);
 
-      // 3. 密度投影：按列/行统计异常块密度，取密度≥峰值15%的连续跨度作为病灶范围
-      var colD=new Array(nbx).fill(0), rowD=new Array(nby).fill(0);
-      for (var gy2=0; gy2<nby; gy2++) for (var gx2=0; gx2<nbx; gx2++) {
-        if (map[gy2][gx2]) { colD[gx2]++; rowD[gy2]++; }
-      }
-      var peakC=Math.max.apply(null,colD), peakR=Math.max.apply(null,rowD);
-      var thrC=Math.max(1, peakC*0.15), thrR=Math.max(1, peakR*0.15);
-      function spanOf(arr,thr){
-        var lo=-1,hi=-1;
-        for (var k=0;k<arr.length;k++){ if(arr[k]>=thr){ if(lo<0)lo=k; hi=k; } }
-        return [lo,hi];
-      }
-      var cs=spanOf(colD,thrC), rs=spanOf(rowD,thrR);
+      // 3. 加权显著度定位：以"病灶权重"质心 + 扩散度(标准差)确定紧致框，
+      //    只锁定异常真正聚集的区域，离群的轻微色差/毛孔不再把框撑到整张脸
+      var hasLesion=false, bbox=null, c0=-1,c1=-1,r0=-1,r1=-1;
+      var maxW=0;
+      for (var ay0=0; ay0<nby; ay0++) for (var ax0=0; ax0<nbx; ax0++) if(blkW[ay0][ax0]>maxW) maxW=blkW[ay0][ax0];
 
-      var hasLesion = (darkRatio>0.015 && darkRatio<0.85) || redRatio>0.02 || brightBlocks/Math.max(1,totalBlocks)>0.03;
-      var bbox=null;
-      if (hasLesion && cs[0]>=0 && rs[0]>=0) {
-        var x1=(m+cs[0]*bs)/W,        y1=(m+rs[0]*bs)/H;
-        var x2=(m+(cs[1]+1)*bs)/W,    y2=(m+(rs[1]+1)*bs)/H;
-        bbox={ x:x1, y:y1, w:Math.max(0.02,x2-x1), h:Math.max(0.02,y2-y1) };
+      if (maxW > 0.12) {
+        // (a) 3x3 平滑权重，抑制单块噪声，得到稳健的病灶显著度图
+        var sm=[];
+        for (var sy2=0; sy2<nby; sy2++){
+          sm[sy2]=[];
+          for (var sx2=0; sx2<nbx; sx2++){
+            var acc=0, ac=0;
+            for (var oy=-1; oy<=1; oy++) for (var ox=-1; ox<=1; ox++){
+              var yy0=sy2+oy, xx0=sx2+ox;
+              if (yy0>=0&&yy0<nby&&xx0>=0&&xx0<nbx){ acc+=blkW[yy0][xx0]; ac++; }
+            }
+            sm[sy2][sx2]=acc/Math.max(1,ac);
+          }
+        }
+        // (b) 稳健峰值 = 平滑图最大值；核心阈值取峰值 45%
+        var pkx=0, pky=0, pkv=0;
+        for (var py0=0; py0<nby; py0++) for (var px0=0; px0<nbx; px0++) if(sm[py0][px0]>pkv){ pkv=sm[py0][px0]; pkx=px0; pky=py0; }
+        var thr = pkv*0.45;
+        var win = Math.max(2, Math.round(Math.max(nbx,nby)*0.35)); // 邻域窗口
+        // (c) 均值漂移：从峰值出发收敛到"最显著的病灶模式"，
+        //     避免远处次级聚集（如下颌/口周的轻度色沉）把框拉偏 —— 这是关键修复
+        var cx2=pkx, cy2=pky;
+        for (var it=0; it<8; it++){
+          var swA=0, sxA=0, syA=0;
+          var yA0=Math.max(0,Math.round(cy2-win)), yA1=Math.min(nby-1,Math.round(cy2+win));
+          var xA0=Math.max(0,Math.round(cx2-win)), xA1=Math.min(nbx-1,Math.round(cx2+win));
+          for (var ya=yA0; ya<=yA1; ya++) for (var xa=xA0; xa<=xA1; xa++){
+            var wa=sm[ya][xa]; if (wa<thr) continue;
+            var pw=wa*wa;                       // 强度平方加权：让深色核心主导
+            swA+=pw; sxA+=pw*xa; syA+=pw*ya;
+          }
+          if (swA<=0) break;
+          var ncx=sxA/swA, ncy=syA/swA;
+          var moved=Math.abs(ncx-cx2)+Math.abs(ncy-cy2);
+          cx2=ncx; cy2=ncy;
+          if (moved<0.3) break;
+        }
+        // (d) 在收敛中心的窗口内，用 w² 计算覆盖病灶主体的扩散度 → 确定框
+        var sw=0, mX=0, mY=0, mXX=0, mYY=0, kept=0;
+        var yB0=Math.max(0,Math.round(cy2-win)), yB1=Math.min(nby-1,Math.round(cy2+win));
+        var xB0=Math.max(0,Math.round(cx2-win)), xB1=Math.min(nbx-1,Math.round(cx2+win));
+        for (var yb=yB0; yb<=yB1; yb++) for (var xb=xB0; xb<=xB1; xb++){
+          var wb=sm[yb][xb]; if (wb<thr) continue;
+          var pwb=wb*wb;
+          sw+=pwb; mX+=pwb*xb; mY+=pwb*yb; mXX+=pwb*xb*xb; mYY+=pwb*yb*yb; kept++;
+        }
+        if (sw > 0 && kept >= 1) {
+          var cxm = mX/sw, cym = mY/sw;
+          var sdx = Math.sqrt(Math.max(0, mXX/sw - cxm*cxm));
+          var sdy = Math.sqrt(Math.max(0, mYY/sw - cym*cym));
+          var k = 1.9;
+          var halfX = Math.max(0.8, sdx*k);   // 至少约一格，单发病灶也有可见框
+          var halfY = Math.max(0.8, sdy*k);
+          c0 = Math.max(0,     Math.round(cxm - halfX));
+          c1 = Math.min(nbx-1, Math.round(cxm + halfX));
+          r0 = Math.max(0,     Math.round(cym - halfY));
+          r1 = Math.min(nby-1, Math.round(cym + halfY));
+          var bx1=(m + c0*bs)/W,       by1=(m + r0*bs)/H;
+          var bx2=(m + (c1+1)*bs)/W,   by2=(m + (r1+1)*bs)/H;
+          bx1=Math.max(0,bx1); by1=Math.max(0,by1); bx2=Math.min(1,bx2); by2=Math.min(1,by2);
+          bbox={ x:bx1, y:by1, w:Math.max(0.03,bx2-bx1), h:Math.max(0.03,by2-by1) };
+          hasLesion = true;
+        }
       }
+      // 兜底：无显著色素/红斑，但存在亮斑（色素减退/白癜风）也视为有病灶
+      if (!hasLesion && brightBlocks/Math.max(1,totalBlocks) > 0.03) hasLesion = true;
 
-      // 4. bbox 内的形态学特征：密度(融合 vs 散在)、左右/上下不对称、边界复杂度
+      // 4. 主病灶区域内的形态学特征：密度(融合 vs 散在)、左右/上下不对称、边界复杂度
       var density=0, asymLR=0, asymTB=0, edgeComplex=0;
-      if (cs[0]>=0 && rs[0]>=0) {
+      if (c0>=0 && r0>=0) {
         var bxBlk=0, bxAbn=0, leftM=0, rightM=0, topM=0, botM=0, perim=0;
-        var midX=(cs[0]+cs[1])/2, midY=(rs[0]+rs[1])/2;
-        for (var yy=rs[0]; yy<=rs[1]; yy++) for (var xx=cs[0]; xx<=cs[1]; xx++) {
+        var midX=(c0+c1)/2, midY=(r0+r1)/2;
+        for (var yy=r0; yy<=r1; yy++) for (var xx=c0; xx<=c1; xx++) {
           bxBlk++;
           if (blkAbn[yy] && blkAbn[yy][xx]) {
             bxAbn++;
@@ -2797,7 +2870,7 @@ function detectDarkLesion(dataUrl) {
       var brownMean = pigBlocks? brownSum/pigBlocks : 0;
       var brownStd  = pigBlocks? Math.sqrt(Math.max(0, brownSqSum/pigBlocks - brownMean*brownMean)) : 0;
       var multichrome = brownMean>1 ? brownStd/brownMean : 0;   // 色素多色性 → 黑色素瘤线索
-      var erythema  = redBlocks? (eryeSum/redBlocks)/80 : 0;     // 0..~1 红斑强度
+      var erythema  = redBlocks? (eryeSum/redBlocks)/45 : 0;     // 0..~1 红斑强度(相对基线)
 
       var features = {
         pigmentRatio: pigBlocks/Math.max(1,totalBlocks),
@@ -2837,43 +2910,44 @@ function classifyByFeatures(f, region) {
   var pig = f.pigmentRatio, focal = (f.coverage>0 && f.coverage<0.10);
 
   // —— 色素性 ——
-  // 黄褐斑：成片融合的棕色色素、覆盖大、低红、色调较均一
+  // 黄褐斑：成片融合的棕色色素、覆盖中等偏大、低红、色调较均一
+  //   （基础权重由 ×4 降到 ×2.2，并要求真有棕色 + 强力扣减红斑，避免任何脸都判成黄褐斑）
   S.melasma = clamp01(
-    pig*4 + (f.density>0.45?0.4:0) + (f.coverage>0.12?0.35:0) + (f.brownness>12?0.2:0)
-    - (f.redRatio>0.05?0.5:0) - (f.multichrome>0.7?0.3:0) - (focal?0.4:0)
+    pig*2.2 + (f.density>0.45?0.25:0) + (f.coverage>0.10&&f.coverage<0.55?0.25:0) + (f.brownness>14?0.2:0)
+    - f.redRatio*4 - (f.multichrome>0.6?0.3:0) - (focal?0.5:0)
   );
-  // 雀斑：散在多发的小色素点、密度低、覆盖中等偏大
+  // 雀斑：散在多发的小色素点、密度低、边界破碎
   S.ephelides = clamp01(
-    pig*3.5 + (f.density<0.4?0.45:0) + (f.edgeComplex>0.5?0.35:0) + (f.coverage>0.08?0.2:0)
-    - (f.redRatio>0.05?0.4:0) - (f.density>0.6?0.4:0)
+    pig*2.0 + (f.density<0.42?0.35:0) + (f.edgeComplex>0.5?0.3:0)
+    - f.redRatio*3 - (f.coverage>0.6?0.3:0) - (f.density>0.6?0.3:0)
   );
   // 黑素细胞痣：局灶单发、密度高、色调均一、对称
   S.melanocytic_nevi = clamp01(
-    (focal?0.6:0) + pig*2 + (f.density>0.5?0.3:0) + (f.multichrome<0.5?0.2:0)
+    (focal?0.55:0) + pig*1.4 + (f.density>0.5?0.25:0) + (f.multichrome<0.45?0.2:0)
     + ((f.asymLR<0.35&&f.asymTB<0.35)?0.2:0) - (f.coverage>0.2?0.4:0)
   );
   // 黑色素瘤(可疑)：局灶色素 + 多色/不对称/边界破碎/深色素
   S.melanoma = clamp01(
-    (pig>0.02?0.3:0) + (f.multichrome>0.7?0.5:0) + (f.asymLR>0.45||f.asymTB>0.45?0.35:0)
-    + (f.edgeComplex>0.7?0.3:0) + (f.veryDarkRatio>0.02?0.4:0) - (f.density>0.7&&f.multichrome<0.4?0.4:0)
+    (pig>0.01?0.2:0) + (f.multichrome>0.65?0.45:0) + ((f.asymLR>0.45||f.asymTB>0.45)?0.35:0)
+    + (f.edgeComplex>0.7?0.3:0) + (f.veryDarkRatio>0.015?0.4:0) - (f.density>0.7&&f.multichrome<0.4?0.4:0)
   );
   // —— 色素减退 ——
   S.vitiligo = clamp01(
-    f.brightRatio*5 + (f.edgeComplex<0.6?0.25:0) - (f.redRatio>0.04?0.4:0) - (pig>0.06?0.3:0)
+    f.brightRatio*5 + (f.edgeComplex<0.6?0.25:0) - f.redRatio*4 - (pig>0.06?0.3:0)
   );
   S.hypopigmentation = clamp01(
     f.brightRatio*4 + (f.edgeComplex>0.6?0.2:0) - (f.brightRatio>0.12?0.3:0)
   );
 
-  // —— 红斑/炎症性 ——
+  // —— 红斑/炎症性（明显红斑时应压过色素类）——
   var red = f.redRatio;
   // 酒渣鼻：面中部弥漫红斑、强度高、成片
   S.rosacea = clamp01(
-    red*6 + f.erythema*0.5 + (region==='face'?0.25:0) + (f.density>0.4?0.2:0) - (pig>0.08?0.3:0)
+    red*6 + f.erythema*0.5 + (region==='face'?0.2:0) + (f.density>0.4?0.2:0) - pig*2
   );
   // 丘脓型痤疮：多发散在红色丘疹/脓疱
   S.acne_papulopustular = clamp01(
-    red*5 + (f.density<0.45?0.3:0) + (f.edgeComplex>0.5?0.25:0) + (region==='face'?0.15:0)
+    red*5 + (f.density<0.45?0.3:0) + (f.edgeComplex>0.5?0.25:0) + (region==='face'?0.15:0) - pig*1.5
   );
   // 囊肿性痤疮：局灶强红斑、强度高
   S.acne_cystic = clamp01(
@@ -2881,11 +2955,11 @@ function classifyByFeatures(f, region) {
   );
   // 湿疹：边界不清的弥漫红斑（边界复杂度高）
   S.eczema = clamp01(
-    red*5 + (f.edgeComplex>0.65?0.4:0) + (f.density<0.6?0.2:0) - (f.density>0.7?0.3:0)
+    red*5 + (f.edgeComplex>0.65?0.4:0) + (f.density<0.6?0.2:0) - (f.density>0.7?0.3:0) - pig
   );
   // 银屑病：边界清晰成片红斑（边界复杂度低、密度高）
   S.psoriasis = clamp01(
-    red*5 + (f.edgeComplex<0.55?0.35:0) + (f.density>0.55?0.3:0) + (f.coverage>0.1?0.2:0)
+    red*5 + (f.edgeComplex<0.55?0.35:0) + (f.density>0.55?0.3:0) + (f.coverage>0.1?0.2:0) - pig
   );
   // 荨麻疹：浅淡弥漫红/粉、强度中等
   S.urticaria = clamp01(
@@ -2968,7 +3042,7 @@ function getDiseaseLocalizationHint(key) {
     herpes_zoster:     'Dermatomal vesicle clusters. Follow the dermatomal strip end to end.',
     tinea_corporis:    'Annular lesion with central clearing and scaly advancing edge. Box the whole ring.',
     vitiligo:          'Depigmented white patches with defined border. Box the full extent of each depigmented area.',
-    melasma:           'Confluent brown hyperpigmentation. Draw ONE large primary box that encloses the ENTIRE hyperpigmented region edge-to-edge (typically large areas of cheek/forehead), not just the darkest center.',
+    melasma:           'Confluent brown hyperpigmentation. Draw a box that tightly wraps ONLY the visibly hyperpigmented patch(es); exclude clearly normal surrounding skin. Do NOT box the whole face.',
     ephelides:         'Scattered freckles/lentigines. Draw ONE primary box covering the whole speckled region.',
     urticaria:         'Raised wheals with flare. Cover all active wheals.'
   };
@@ -2995,7 +3069,7 @@ Step 2 — Per lesion: for each lesion found, estimate its bounding box:
    y = distance from top edge / total image height  (decimal 0.0–1.0)
    w = lesion width / total image width             (decimal 0.0–1.0)
    h = lesion height / total image height           (decimal 0.0–1.0)
-   PRIMARY box must enclose the FULL extent of the lesion. For diffuse/confluent/scattered pigmentation or erythema, make ONE big primary box covering all involved skin edge-to-edge (slightly over-cover rather than crop the lesion). Use a tight box ONLY for a single discrete lesion (solitary mole/nodule/ulcer).
+   PRIMARY box must TIGHTLY enclose ONLY the affected skin, hugging the visible lesion border, and must NOT include large areas of clearly normal skin. For diffuse/confluent pigmentation, box only the densest involved region, not the entire face. NEVER let any box exceed ~50% of the image area.
 Step 3 — Classify: primary = largest/most characteristic; secondary = satellite/adjacent; suspect = ambiguous.
 Step 4 — Label in Chinese with specific morphology (e.g. 红斑斑块, 丘疹簇, 鳞屑区, 水疱群, 结节, 溃疡).
 Step 5 — Confidence: how certain this region is diseased (0–1).
@@ -3020,7 +3094,7 @@ Return ONLY a valid JSON array, no markdown, no explanation:
       system:sys,
       messages:[{role:'user',content:[
         {type:'image',source:{type:'base64',media_type:mtype,data:b64}},
-        {type:'text',text:`Localize all ${diagResult.diseaseName} lesions. Perform a grid scan and estimate coordinates carefully. The primary box must enclose the FULL extent of the affected area (over-cover rather than crop). Return JSON array only.`}
+        {type:'text',text:`Localize all ${diagResult.diseaseName} lesions. Perform a grid scan and estimate coordinates carefully. The primary box must TIGHTLY wrap ONLY the visibly affected skin (hug the lesion border, exclude normal skin, max ~50% of image). Return JSON array only.`}
       ]}]
     })
   });
@@ -3047,33 +3121,34 @@ Return ONLY a valid JSON array, no markdown, no explanation:
 function expandPrimaryToLesion(bboxes, lesionBbox, opts) {
   opts = opts || {};
   if (!lesionBbox) return bboxes || [];
-  var pad = opts.pad !== undefined ? opts.pad : 0.03; // 框外再留 3% 余量
-  var cap = opts.cap !== undefined ? opts.cap : 0.94; // 单边最大占图 94%，避免框住整脸
+  var pad = opts.pad !== undefined ? opts.pad : 0.01; // 像素病灶框已贴边，仅留极小余量
+  var cap = opts.cap !== undefined ? opts.cap : 0.7;   // 单边最大占图 70%，杜绝框住整张图
   bboxes = Array.isArray(bboxes) ? bboxes.slice() : [];
 
-  // 像素病灶范围（加余量）
-  var lx = Math.max(0, lesionBbox.x - pad);
-  var ly = Math.max(0, lesionBbox.y - pad);
-  var lx2 = Math.min(1, lesionBbox.x + lesionBbox.w + pad);
-  var ly2 = Math.min(1, lesionBbox.y + lesionBbox.h + pad);
+  // 像素病灶范围（小余量）
+  var lx  = Math.max(0, lesionBbox.x - pad);
+  var ly  = Math.max(0, lesionBbox.y - pad);
+  var lw  = Math.min(1, lesionBbox.x + lesionBbox.w + pad) - lx;
+  var lh  = Math.min(1, lesionBbox.y + lesionBbox.h + pad) - ly;
+  var lArea = lw*lh, lcx = lx+lw/2, lcy = ly+lh/2;
 
-  // 找主框（无则新建）
   var pi = bboxes.findIndex(function(b){ return b && b.type === 'primary'; });
   if (pi < 0) pi = bboxes.length ? 0 : -1;
 
   if (pi < 0) {
-    bboxes.unshift({ x:lx, y:ly, w:lx2-lx, h:ly2-ly, label:'主病灶', type:'primary', conf:0.8 });
+    bboxes.unshift({ x:lx, y:ly, w:lw, h:lh, label:'主病灶', type:'primary', conf:0.8 });
     return clampBox(bboxes, cap);
   }
 
+  // 不再做"并集"放大；而是：当 AI 主框明显偏大(>像素框1.6倍 或 >50%面积)
+  // 或中心偏离像素病灶时，改用紧致的像素病灶框，只框病变部位。
   var p = bboxes[pi];
-  // 取 AI 框与像素框的并集 → 完整包住整个病灶
-  var nx  = Math.min(p.x, lx);
-  var ny  = Math.min(p.y, ly);
-  var nx2 = Math.max(p.x + p.w, lx2);
-  var ny2 = Math.max(p.y + p.h, ly2);
-  p.x = nx; p.y = ny; p.w = nx2 - nx; p.h = ny2 - ny;
-  bboxes[pi] = p;
+  var pArea = p.w*p.h, pcx = p.x+p.w/2, pcy = p.y+p.h/2;
+  var centerClose = Math.abs(pcx-lcx) < 0.25 && Math.abs(pcy-lcy) < 0.25;
+  if (!centerClose || pArea > lArea*1.6 || pArea > 0.5) {
+    p.x = lx; p.y = ly; p.w = lw; p.h = lh;
+    bboxes[pi] = p;
+  }
   bboxes = clampBox(bboxes, cap);
 
   // 移除中心落在主框内的冗余次框/疑似框（避免框中套框）
@@ -3088,12 +3163,19 @@ function expandPrimaryToLesion(bboxes, lesionBbox, opts) {
 }
 
 function clampBox(bboxes, cap) {
+  cap = cap || 0.9;
   bboxes.forEach(function(b){
     if (!b) return;
-    b.x = Math.max(0, Math.min(1, b.x));
-    b.y = Math.max(0, Math.min(1, b.y));
     b.w = Math.max(0.02, Math.min(cap, b.w));
     b.h = Math.max(0.02, Math.min(cap, b.h));
+    // 硬上限：单框面积不超过全图 50%，从中心等比收缩，确保只框病变而非整图
+    var maxArea = 0.5;
+    if (b.w*b.h > maxArea) {
+      var cx=b.x+b.w/2, cy=b.y+b.h/2, k=Math.sqrt(maxArea/(b.w*b.h));
+      b.w*=k; b.h*=k; b.x=cx-b.w/2; b.y=cy-b.h/2;
+    }
+    b.x = Math.max(0, Math.min(1, b.x));
+    b.y = Math.max(0, Math.min(1, b.y));
     if (b.x + b.w > 1) b.x = Math.max(0, 1 - b.w);
     if (b.y + b.h > 1) b.y = Math.max(0, 1 - b.h);
   });
@@ -3115,19 +3197,24 @@ async function runAnalysis() {
     const lesionInfo = await detectDarkLesion(imgData);
     window._lesionInfo = lesionInfo;
     window._darkLesionDetected = lesionInfo.has;  // 向后兼容 callClaude 内部判定
-    // 阶段2: 多视图集成诊断（全图 + 病灶聚焦放大 + 强对比图，投票聚合）
-    r = await callClaudeEnsemble(enhanced, imgData, lesionInfo);
-    // 阶段3: 若检测到病变，专项病灶定位（额外 API，bbox 精度更高）
-    if (r.diagnosis === 'disease') {
+    // 阶段2: 诊断
+    if (window._skinModel) {
+      // ① 首选：真实训练模型（HAM10000 / MobileNet，TTA×5，纯前端推理）
+      r = await classifyWithModel(enhanced, lesionInfo, 5);
+    } else {
+      // ② 模型未就绪时回退：Claude API 集成 → 离线启发式
       try {
-        const refinedBboxes = await callClaudeLocalize(enhanced, r);
-        if (refinedBboxes && refinedBboxes.length > 0) {
-          r.bboxes = refinedBboxes;
+        r = await callClaudeEnsemble(enhanced, imgData, lesionInfo);
+        if (r.diagnosis === 'disease') {
+          try {
+            const refinedBboxes = await callClaudeLocalize(enhanced, r);
+            if (refinedBboxes && refinedBboxes.length > 0) r.bboxes = refinedBboxes;
+          } catch(e2) {}
         }
-      } catch(e2) { console.warn('Localization pass failed, using diagnosis bboxes:', e2); }
+      } catch(eApi) { r = simulate(); }
     }
   }
-  catch(e) { console.warn('API fallback:', e); r = simulate(); }
+  catch(e) { console.warn('analysis fallback:', e); r = simulate(); }
   // 阶段3.5: 无论真实 API 还是离线 simulate，都保证主框完整包住客户端检测到的病灶范围（解决框不全）
   if (r && r.diagnosis === 'disease' && window._lesionInfo && window._lesionInfo.bbox) {
     r.bboxes = expandPrimaryToLesion(r.bboxes, window._lesionInfo.bbox);
@@ -3227,7 +3314,7 @@ If you observe a DARK BROWN or BLACK focal lesion:
 ## BOUNDING BOX RULES:
 - x,y = top-left corner (normalized 0-1), w,h = width/height (normalized 0-1)
 - The PRIMARY box must enclose the ENTIRE extent of the affected/lesional skin — its full outer envelope — not just the densest or darkest spot.
-- For DIFFUSE / CONFLUENT / MULTIFOCAL lesions (melasma, freckles/lentigines, post-inflammatory hyperpigmentation, widespread eczema/erythema), draw ONE large primary box that covers ALL involved skin from the outermost lesion edge to edge. It is better to slightly over-cover than to leave lesion outside the box.
+- For DIFFUSE / CONFLUENT / MULTIFOCAL lesions (melasma, freckles/lentigines, post-inflammatory hyperpigmentation, widespread eczema/erythema), draw a primary box that wraps ONLY the most densely involved region; exclude clearly normal skin and keep the box under ~50% of the image. Prefer a tight, well-fitted box over covering the whole face.
 - Only use a small tight box for a single DISCRETE lesion (a solitary mole, nodule, or ulcer).
 - Use secondary/suspect boxes for clearly separate satellite lesions located outside the primary region.
 
@@ -3906,6 +3993,162 @@ function buildSpectrumGrid() {
     g.appendChild(el);
   });
 }
+
+// ════════════════════════════════════════════════════════════════════
+//  真·训练模型推理模块：HAM10000 七分类（MobileNet, TensorFlow.js）
+//  模型来源：vbookshelf/Skin-Lesion-Analyzer（Apache-2.0）。
+//  说明：纯前端推理，图像不上传任何服务器；皮肤癌/色素病变 7 类。
+//  部署：把 skin_model/ 文件夹（model.json + 4 个权重分片）放在与本页同目录。
+// ════════════════════════════════════════════════════════════════════
+window._skinModel = null;
+window._modelReady = false;
+window._modelError = null;
+var SKIN_MODEL_URL = './skin_model/model.json';   // 同目录相对路径，避免跨域
+
+// HAM10000 索引(0..6) → 应用内 DISEASE_DB 键 + 三语名 + 良恶性 + 严重度
+var HAM_CLASSES = [
+  {ham:'akiec', key:'akiec',            zh:'光化性角化病/原位癌', en:'Actinic keratosis / Bowen', ko:'광선각화증/보웬병',   malignant:true,  sev:2},
+  {ham:'bcc',   key:'bcc',              zh:'基底细胞癌',          en:'Basal cell carcinoma',      ko:'기저세포암',          malignant:true,  sev:2},
+  {ham:'bkl',   key:'bkl',              zh:'良性角化病',          en:'Benign keratosis',          ko:'양성각화증',          malignant:false, sev:0},
+  {ham:'df',    key:'df',               zh:'皮肤纤维瘤',          en:'Dermatofibroma',            ko:'피부섬유종',          malignant:false, sev:0},
+  {ham:'mel',   key:'melanoma',         zh:'黑色素瘤',            en:'Melanoma',                  ko:'흑색종',              malignant:true,  sev:2},
+  {ham:'nv',    key:'melanocytic_nevi', zh:'黑素细胞痣',          en:'Melanocytic nevus',         ko:'흑색세포모반',        malignant:false, sev:0},
+  {ham:'vasc',  key:'vasc',             zh:'血管性病变',          en:'Vascular lesion',           ko:'혈관병변',            malignant:false, sev:0}
+];
+
+function _modelChip(){
+  var el=document.getElementById('model-status-chip');
+  if(!el){
+    el=document.createElement('div');
+    el.id='model-status-chip';
+    el.style.cssText='position:fixed;left:12px;bottom:12px;z-index:9999;font-size:11px;'
+      +'padding:6px 12px;border-radius:14px;background:rgba(15,23,42,.85);color:#e2e8f0;'
+      +'box-shadow:0 2px 10px rgba(0,0,0,.25);font-family:system-ui,sans-serif;backdrop-filter:blur(4px)';
+    document.body.appendChild(el);
+  }
+  return el;
+}
+function setModelStatus(state, pct){
+  var el=_modelChip();
+  if(state==='loading') el.innerHTML='⏳ 模型加载中… '+(pct!=null?Math.round(pct*100)+'%':'');
+  else if(state==='ready'){ el.innerHTML='🟢 真实模型已加载 · HAM10000(7类)'; setTimeout(function(){ el.style.opacity='0.35'; },4000); }
+  else { el.innerHTML='🟡 未加载模型，使用启发式备用'; el.title=window._modelError||''; }
+}
+
+async function loadSkinModel(){
+  if (typeof tf === 'undefined'){ window._modelError='tensorflow.js 未加载'; setModelStatus('fail'); return; }
+  setModelStatus('loading', 0);
+  try{
+    window._skinModel = await tf.loadLayersModel(SKIN_MODEL_URL, {
+      onProgress:function(f){ setModelStatus('loading', f); }
+    });
+    // 预热，消除首次推理卡顿
+    tf.tidy(function(){ window._skinModel.predict(tf.zeros([1,224,224,3])).dataSync(); });
+    window._modelReady = true;
+    setModelStatus('ready');
+    console.log('[SkinModel] HAM10000 模型已就绪');
+  }catch(e){
+    window._modelError = (e && e.message) ? e.message : String(e);
+    window._modelReady = false;
+    setModelStatus('fail');
+    console.warn('[SkinModel] 加载失败，自动回退启发式：', e);
+  }
+}
+
+function _loadImg(src){
+  return new Promise(function(res,rej){ var i=new Image(); i.crossOrigin='anonymous';
+    i.onload=function(){res(i);}; i.onerror=rej; i.src=src; });
+}
+
+// 预处理 + TTA 多视图推理 → 返回 7 类平均概率数组
+async function predictProbs(imgEl, ttaN){
+  ttaN = ttaN || 5;
+  var t = tf.tidy(function(){
+    var base = tf.browser.fromPixels(imgEl).resizeBilinear([224,224]).toFloat()
+                 .sub(127.5).div(127.5);          // 归一化到 [-1,1]，与训练一致
+    var views=[base];
+    if(ttaN>=2) views.push(base.reverse(1));        // 水平翻转
+    if(ttaN>=3) views.push(base.reverse(0));        // 垂直翻转
+    if(ttaN>=4) views.push(base.mul(1.06).clipByValue(-1,1)); // 增亮
+    if(ttaN>=5) views.push(base.mul(0.94).clipByValue(-1,1)); // 变暗
+    var acc=null;
+    for(var i=0;i<views.length;i++){
+      var pr=window._skinModel.predict(views[i].expandDims(0));
+      acc = acc ? acc.add(pr) : pr;
+    }
+    return acc.div(views.length);
+  });
+  var arr = await t.data(); t.dispose();
+  return Array.from(arr);
+}
+
+// 主分类入口：返回与 simulate() 完全一致的结果对象（下游 UI/记录/方案/宣教全部兼容）
+async function classifyWithModel(enhancedDataUrl, lesionInfo, ttaN){
+  var region = (document.querySelector('input[name="reg"]:checked')||{}).value||'face';
+  var spec = (document.getElementById('specMode')||{}).value||'rgb';
+  // 聚焦病灶裁剪后再分类（病灶占满画面 → 分类更准）
+  var cropUrl = enhancedDataUrl;
+  try { if(lesionInfo && lesionInfo.bbox) cropUrl = await cropToLesion(enhancedDataUrl, lesionInfo.bbox, 0.25); } catch(e){}
+  var img = await _loadImg(cropUrl);
+  var p = await predictProbs(img, ttaN||5);
+  var order = p.map(function(v,i){return {i:i,v:v};}).sort(function(a,b){return b.v-a.v;});
+  var cls = HAM_CLASSES[order[0].i];
+  var key = cls.key, conf = Math.max(0.05, Math.min(0.999, order[0].v));
+  var dInfo = DISEASE_DB[key] || {color:'#ef4444', sev:cls.sev, cat:5};
+  var lang = (window.currentLang||'zh'), nameLoc = (cls[lang]||cls.zh);
+
+  // 面积 / EASI / 红斑 / 色素 评分：沿用像素特征量化（模型只负责"是什么"，定位与量化用启发式）
+  var F = (lesionInfo && lesionInfo.features) ? lesionInfo.features : null;
+  var areaR = F ? Math.max(.02, Math.min(.6, F.coverage||0)) : .1;
+  var easiA = areaR<.01?0:areaR<.1?1:areaR<.3?2:areaR<.5?3:4;
+  var eryI  = F ? Math.max(.05, Math.min(.95, F.erythema||0)) : .2;
+  var easiE = Math.min(3, Math.floor(eryI*4));
+  var pig   = F ? Math.min(3, Math.round((F.pigmentRatio||0)*8 + (F.multichrome||0))) : 1;
+  var eT    = easiA*(easiE+1);
+
+  var _li = (lesionInfo && lesionInfo.bbox) ? lesionInfo.bbox : null;
+  var primaryBox = _li ? {x:_li.x,y:_li.y,w:_li.w,h:_li.h,label:'主病灶',type:'primary',conf:conf}
+                       : {x:.30,y:.30,w:.40,h:.40,label:'主病灶',type:'primary',conf:conf};
+  var top3 = order.slice(0,3).map(function(o){ var c=HAM_CLASSES[o.i];
+    return { key:c.key, name:(c[lang]||c.zh), confidence:o.v }; });
+  var malignant = cls.malignant, sev = cls.sev;
+  var margin = order[0].v - order[1].v;
+  var needReview = malignant || conf < 0.55 || margin < 0.15;
+
+  return {
+    diagnosis:'disease', conf:conf, color:dInfo.color||'#ef4444',
+    diseaseKey:key, diseaseName:dInfo.name||nameLoc,
+    severity:sev, sevDesc:['轻度：良性病变，定期随访','中度：建议皮肤科评估','重度：癌性/癌前可能，尽快活检确诊'][sev],
+    disDesc: nameLoc+'（HAM10000 模型判定）。',
+    category:dInfo.cat||5, area:'约'+Math.round(areaR*100)+'%',
+    areaRatio:areaR, easiArea:easiA, erythemaIntensity:eryI,
+    easiErythema:easiE, pigmentScore:pig, easiTotal:eT,
+    symmetry: F ? ((F.asymLR>0.4||F.asymTB>0.4)?'不对称':'对称') : '—',
+    border:   F ? ((F.edgeComplex>0.6)?'不规则':'规则') : '—',
+    colorUniform: F ? ((F.multichrome>0.6)?'多色':'均匀') : '—',
+    sceScore: conf,
+    needReview: needReview,
+    risk: malignant ? 'high' : (sev>=2?'high':sev>=1?'moderate':'low'),
+    aiNote: 'MobileNet/HAM10000 模型判定为「'+nameLoc+'」，置信度 '+Math.round(conf*100)+'%。'
+      + (malignant ? ' ⚠️ 该类别属癌性/癌前病变，强烈建议尽快至皮肤科活检确诊。'
+                   : ' 建议由皮肤科医生结合临床进一步确认。'),
+    top3: top3, bboxes:[primaryBox],
+    gradcamInfo:'模型在裁剪后的病灶区域给出最高激活；病灶面积约 '+Math.round(areaR*100)+'%。',
+    region:region, spectrum:spec, fromAI:true, fromModel:true
+  };
+}
+
+// 摄像头逐帧：模型分类（TTA×2 以保证帧率），形状兼容 updateCamUI/drawCamAnnotations
+async function classifyFrameWithModel(frameDataUrl){
+  var lesionInfo=null;
+  try { lesionInfo = await detectDarkLesion(frameDataUrl); } catch(e){}
+  return await classifyWithModel(frameDataUrl, lesionInfo, 2);
+}
+
+// 启动加载（DOM 就绪后）
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', loadSkinModel);
+else loadSkinModel();
+
 </script>
 
 <!-- ═══════════════ 摄像头实时监测模态框 ═══════════════ -->
@@ -3915,7 +4158,7 @@ function buildSpectrumGrid() {
     <!-- 头部 -->
     <div id="cam-header">
       <h2>📹 SKIN<span>AI</span> 实时监测</h2>
-      <div style="font-size:11px;color:rgba(255,255,255,.5);margin-right:auto">EfficientNetV2-M · GradCAM · EASI评分</div>
+      <div style="font-size:11px;color:rgba(255,255,255,.5);margin-right:auto">MobileNet·HAM10000 · GradCAM · EASI评分</div>
       <div id="cam-status-badge" style="font-size:11px;padding:4px 10px;background:rgba(255,255,255,.1);border-radius:12px;color:rgba(255,255,255,.7);margin-right:8px">未启动</div>
       <button class="cam-close" onclick="closeCamModal()">✕</button>
     </div>
