@@ -2628,9 +2628,25 @@ function preprocessImage(dataUrl, options) {
       var ctx = c.getContext('2d');
       ctx.drawImage(img, 0, 0);
 
-      // 对比度增强
+      // 光照归一化（Gray-World 白平衡）：消除环境光偏色，使红斑/色素判读更稳定
       var id = ctx.getImageData(0, 0, c.width, c.height);
       var d = id.data;
+      if (options.whiteBalance) {
+        var sr=0, sg=0, sb=0, n=d.length/4;
+        for (var p=0; p<d.length; p+=4){ sr+=d[p]; sg+=d[p+1]; sb+=d[p+2]; }
+        var ar=sr/n, ag=sg/n, ab=sb/n, gray=(ar+ag+ab)/3;
+        // 限制增益幅度，避免极端偏色被过度放大
+        var kr=Math.min(1.6,Math.max(0.6,gray/(ar||1)));
+        var kg=Math.min(1.6,Math.max(0.6,gray/(ag||1)));
+        var kb=Math.min(1.6,Math.max(0.6,gray/(ab||1)));
+        for (var q=0; q<d.length; q+=4){
+          d[q]  =Math.min(255,d[q]  *kr);
+          d[q+1]=Math.min(255,d[q+1]*kg);
+          d[q+2]=Math.min(255,d[q+2]*kb);
+        }
+      }
+
+      // 对比度增强
       var contrast = options.contrast !== undefined ? options.contrast : 1.22;
       var brightness = options.brightness !== undefined ? options.brightness : 4;
       var factor = (259*(contrast*100+255))/(255*(259-contrast*100));
@@ -2676,7 +2692,7 @@ function detectDarkLesion(dataUrl) {
     var img = new Image();
     img.onload = function() {
       var c = document.createElement('canvas');
-      var scale = Math.min(1, 200/Math.max(img.naturalWidth, img.naturalHeight));
+      var scale = Math.min(1, 220/Math.max(img.naturalWidth, img.naturalHeight));
       c.width  = Math.round(img.naturalWidth  * scale);
       c.height = Math.round(img.naturalHeight * scale);
       var ctx = c.getContext('2d');
@@ -2684,66 +2700,99 @@ function detectDarkLesion(dataUrl) {
       var id = ctx.getImageData(0, 0, c.width, c.height);
       var d = id.data;
       var W = c.width, H = c.height;
+      var m = Math.round(Math.min(W,H)*0.06);
 
-      // 1. 计算整体平均亮度（排除边缘10%）
-      var sumL = 0, countL = 0;
-      var m = Math.round(Math.min(W,H)*0.1);
-      for (var y=m; y<H-m; y++) {
-        for (var x=m; x<W-m; x++) {
-          var i = (y*W+x)*4;
-          sumL += (d[i]+d[i+1]+d[i+2])/3;
-          countL++;
-        }
+      // 1. 用中位数作为肤色基线（对高光/头发更鲁棒）
+      var lums = [];
+      for (var y=m; y<H-m; y++) for (var x=m; x<W-m; x++) {
+        var i=(y*W+x)*4; lums.push((d[i]+d[i+1]+d[i+2])/3);
       }
-      var avgL = sumL / countL;
+      lums.sort(function(a,b){return a-b;});
+      var skinMed = lums[Math.floor(lums.length/2)] || 128;
 
-      // 2. 滑动窗口检测：找局部暗区（比均值暗40+，且区域>1%面积）
-      var blockSize = Math.max(4, Math.round(Math.min(W,H)*0.08));
-      var darkBlocks = 0, totalBlocks = 0;
-      var darkThreshold = avgL * 0.60; // 局部均值低于全局均值60%才算暗区
-
-      for (var by=m; by<H-m-blockSize; by+=blockSize) {
-        for (var bx=m; bx<W-m-blockSize; bx+=blockSize) {
-          var blockSum = 0;
-          for (var dy=0; dy<blockSize; dy++) {
-            for (var dx=0; dx<blockSize; dx++) {
-              var bi = ((by+dy)*W+(bx+dx))*4;
-              blockSum += (d[bi]+d[bi+1]+d[bi+2])/3;
-            }
+      // 2. 分块扫描，标记"色素块"(棕色斑/比肤色暗) 与 "红斑块"
+      var bs = Math.max(4, Math.round(Math.min(W,H)*0.05)); // 较细的网格
+      var nbx = Math.floor((W-2*m)/bs), nby = Math.floor((H-2*m)/bs);
+      var map = [];                  // 异常块布尔图
+      var abnormalBlocks=0, totalBlocks=0, redBlocks=0;
+      for (var gy=0; gy<nby; gy++) {
+        map[gy]=[];
+        for (var gx=0; gx<nbx; gx++) {
+          var sx0=m+gx*bs, sy0=m+gy*bs, sr=0,sg=0,sb=0,cnt=0;
+          for (var dy=0; dy<bs; dy++) for (var dx=0; dx<bs; dx++) {
+            var bi=((sy0+dy)*W+(sx0+dx))*4; sr+=d[bi]; sg+=d[bi+1]; sb+=d[bi+2]; cnt++;
           }
-          var blockAvg = blockSum / (blockSize*blockSize);
-          totalBlocks++;
-          if (blockAvg < darkThreshold) darkBlocks++;
+          var mr=sr/cnt, mg=sg/cnt, mb=sb/cnt, ml=(mr+mg+mb)/3;
+          // 色素块：明显比肤色暗(<90%中位) 但不过暗(>42%中位，排除头发/眉毛/鼻孔阴影)，且偏肤色(R≥B)
+          var pigment = (ml < skinMed*0.90) && (ml > skinMed*0.42) && (mr >= mb-8);
+          // 红斑块：红色明显高于绿蓝
+          var red = (mr>160 && mr-mg>32 && mr-mb>32);
+          var abn = pigment || red;
+          map[gy][gx]=abn; totalBlocks++;
+          if (abn) abnormalBlocks++;
+          if (red) redBlocks++;
         }
       }
+      var darkRatio = abnormalBlocks/Math.max(1,totalBlocks);
+      var redRatio  = redBlocks/Math.max(1,totalBlocks);
 
-      // 3. 色调分析：检测红色/棕色异常区（炎症/血管性病灶）
-      var redAbnormal = 0;
-      for (var y2=m; y2<H-m; y2++) {
-        for (var x2=m; x2<W-m; x2++) {
-          var i2 = (y2*W+x2)*4;
-          var r2=d[i2], g2=d[i2+1], b2=d[i2+2];
-          // 红色超标且与绿蓝差距明显 = 炎性红斑
-          if (r2 > 180 && r2-g2 > 50 && r2-b2 > 50) redAbnormal++;
-        }
+      // 3. 密度投影：按列/行统计异常块密度，取密度≥峰值15%的连续跨度作为病灶范围
+      //    （这样既能覆盖整片弥漫色斑，又能忽略边缘零星杂点/碎发）
+      var colD=new Array(nbx).fill(0), rowD=new Array(nby).fill(0);
+      for (var gy2=0; gy2<nby; gy2++) for (var gx2=0; gx2<nbx; gx2++) {
+        if (map[gy2][gx2]) { colD[gx2]++; rowD[gy2]++; }
       }
-      var redRatio = redAbnormal / countL;
-
-      // 4. 判断：暗区占比>2% 或 红斑区占比>3% → 存在病灶
-      var darkRatio = darkBlocks / Math.max(1, totalBlocks);
-      var hasDarkLesion = darkRatio > 0.02 || redRatio > 0.03;
-
-      // 5. 边缘连通性检测：暗区是否集中（避免头发/阴影误报）
-      if (hasDarkLesion && darkRatio > 0 && darkRatio < 0.5) {
-        // 暗区集中（占比 2%-50%）= 局灶性病灶，更可信
-        resolve(true);
-      } else if (redRatio > 0.03) {
-        resolve(true);
-      } else {
-        resolve(false);
+      var peakC=Math.max.apply(null,colD), peakR=Math.max.apply(null,rowD);
+      var thrC=Math.max(1, peakC*0.15), thrR=Math.max(1, peakR*0.15);
+      function spanOf(arr,thr){
+        var lo=-1,hi=-1;
+        for (var k=0;k<arr.length;k++){ if(arr[k]>=thr){ if(lo<0)lo=k; hi=k; } }
+        return [lo,hi];
       }
+      var cs=spanOf(colD,thrC), rs=spanOf(rowD,thrR);
+
+      var hasLesion = (darkRatio>0.015 && darkRatio<0.75) || redRatio>0.02;
+      var bbox=null;
+      if (hasLesion && cs[0]>=0 && rs[0]>=0) {
+        var x1=(m+cs[0]*bs)/W,        y1=(m+rs[0]*bs)/H;
+        var x2=(m+(cs[1]+1)*bs)/W,    y2=(m+(rs[1]+1)*bs)/H;
+        bbox={ x:x1, y:y1, w:Math.max(0.02,x2-x1), h:Math.max(0.02,y2-y1) };
+      }
+      resolve({ has:hasLesion, bbox:bbox, darkRatio:darkRatio, redRatio:redRatio });
     };
-    img.onerror = function() { resolve(false); };
+    img.onerror = function() { resolve({ has:false, bbox:null }); };
+    img.src = dataUrl;
+  });
+}
+
+// ═══════════════════════════════════════════════════
+// 病灶聚焦裁剪：以病灶为中心裁剪并放大，使病灶占满画面
+// （皮损在画面中占比越大，模型分类越准——ROI 聚焦）
+// ═══════════════════════════════════════════════════
+function cropToLesion(dataUrl, bbox, pad) {
+  pad = pad === undefined ? 0.35 : pad; // 在病灶四周保留 35% 余量，保留周边正常皮肤作对比
+  return new Promise(function(resolve) {
+    if (!bbox) { resolve(dataUrl); return; }
+    var img = new Image();
+    img.onload = function() {
+      var W = img.naturalWidth, H = img.naturalHeight;
+      // 像素坐标 + 余量
+      var bw = bbox.w * W, bh = bbox.h * H;
+      var cx = (bbox.x + bbox.w/2) * W, cy = (bbox.y + bbox.h/2) * H;
+      var side = Math.max(bw, bh) * (1 + pad*2);
+      side = Math.max(side, Math.min(W,H) * 0.25); // 裁剪框不小于短边的25%，避免过度放大噪点
+      var sx = Math.max(0, cx - side/2), sy = Math.max(0, cy - side/2);
+      var sw = Math.min(W - sx, side), sh = Math.min(H - sy, side);
+      // 输出放大到 ~512px，让病灶细节更清晰
+      var out = 512;
+      var c = document.createElement('canvas');
+      c.width = out; c.height = out;
+      var ctx = c.getContext('2d');
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, out, out);
+      resolve(c.toDataURL('image/jpeg', 0.92));
+    };
+    img.onerror = function() { resolve(dataUrl); };
     img.src = dataUrl;
   });
 }
@@ -2751,24 +2800,25 @@ function detectDarkLesion(dataUrl) {
 // 病灶定位的疾病特异性提示
 function getDiseaseLocalizationHint(key) {
   var hints = {
-    melanoma:          'Look for asymmetric pigmented lesion. Outline the entire pigmented area. Mark satellite pigmentation as suspect.',
-    bcc:               'Find pearlescent/translucent nodule with rolled border and telangiectasia. Box tightly around the central lesion.',
+    melanoma:          'Outline the ENTIRE pigmented lesion including any peripheral spread; one box covering the whole pigmented area. Mark distant satellite pigmentation as suspect.',
+    bcc:               'Find pearlescent/translucent nodule with rolled border and telangiectasia. Box around the central lesion.',
     scc:               'Locate indurated keratotic plaque or ulcerated nodule. Include all keratotic scale.',
-    melanocytic_nevi:  'Circular/oval pigmented mole. Tight box around visible pigmentation.',
-    psoriasis:         'Well-demarcated erythematous plaques with silvery scale. Box each distinct plaque separately.',
-    eczema:            'Poorly-defined erythematous patches, may be weeping or crusted. Include excoriation marks.',
-    atopic_dermatitis: 'Flexural lichenified plaques. Include all erythematous/thickened areas.',
-    contact_dermatitis:'Geometric or linear erythematous patches following the exposure pattern.',
-    rosacea:           'Central face erythema, papules/pustules. Box active erythematous/papular zones.',
-    acne_papulopustular:'Individual papules and pustules. Box the primary cluster or most inflamed area.',
-    acne_cystic:       'Deep nodules/cysts. Box each prominent nodule.',
-    impetigo:          'Honey-yellow crusted lesions. Tight box around crusted areas.',
-    herpes_simplex:    'Grouped vesicles on erythematous base. Include all vesicle clusters.',
-    herpes_zoster:     'Dermatomal vesicle clusters. Follow the dermatomal strip.',
-    tinea_corporis:    'Annular lesion with central clearing and scaly advancing edge. Box the ring.',
-    vitiligo:          'Depigmented white patches with defined border. Box each depigmented area.',
-    melasma:           'Brown hyperpigmented patches. Box each distinct hyperpigmented area.',
-    urticaria:         'Raised wheals with flare. Box active wheals.'
+    melanocytic_nevi:  'Circular/oval pigmented mole. Box around the full visible pigmentation.',
+    psoriasis:         'Well-demarcated erythematous plaques with silvery scale. One primary box covering the main affected zone; box clearly separate plaques individually.',
+    eczema:            'Poorly-defined erythematous patches. PRIMARY box should cover the whole confluent involved area, including excoriation marks.',
+    atopic_dermatitis: 'Flexural lichenified plaques. One box covering all erythematous/thickened areas.',
+    contact_dermatitis:'Geometric or linear erythematous patches following the exposure pattern; cover the full affected region.',
+    rosacea:           'Central face erythema, papules/pustules. One box covering the whole flushed/papular zone.',
+    acne_papulopustular:'Box the whole region containing the cluster of papules and pustules.',
+    acne_cystic:       'Box each prominent nodule; primary covers the main affected zone.',
+    impetigo:          'Honey-yellow crusted lesions. Box around all crusted areas.',
+    herpes_simplex:    'Grouped vesicles on erythematous base. Cover all vesicle clusters.',
+    herpes_zoster:     'Dermatomal vesicle clusters. Follow the dermatomal strip end to end.',
+    tinea_corporis:    'Annular lesion with central clearing and scaly advancing edge. Box the whole ring.',
+    vitiligo:          'Depigmented white patches with defined border. Box the full extent of each depigmented area.',
+    melasma:           'Confluent brown hyperpigmentation. Draw ONE large primary box that encloses the ENTIRE hyperpigmented region edge-to-edge (typically large areas of cheek/forehead), not just the darkest center.',
+    ephelides:         'Scattered freckles/lentigines. Draw ONE primary box covering the whole speckled region.',
+    urticaria:         'Raised wheals with flare. Cover all active wheals.'
   };
   return hints[key] || 'Identify the primary area of color/texture abnormality compared to surrounding normal skin.';
 }
@@ -2793,7 +2843,7 @@ Step 2 — Per lesion: for each lesion found, estimate its bounding box:
    y = distance from top edge / total image height  (decimal 0.0–1.0)
    w = lesion width / total image width             (decimal 0.0–1.0)
    h = lesion height / total image height           (decimal 0.0–1.0)
-   TIGHT BOXES ONLY — do not include surrounding normal skin.
+   PRIMARY box must enclose the FULL extent of the lesion. For diffuse/confluent/scattered pigmentation or erythema, make ONE big primary box covering all involved skin edge-to-edge (slightly over-cover rather than crop the lesion). Use a tight box ONLY for a single discrete lesion (solitary mole/nodule/ulcer).
 Step 3 — Classify: primary = largest/most characteristic; secondary = satellite/adjacent; suspect = ambiguous.
 Step 4 — Label in Chinese with specific morphology (e.g. 红斑斑块, 丘疹簇, 鳞屑区, 水疱群, 结节, 溃疡).
 Step 5 — Confidence: how certain this region is diseased (0–1).
@@ -2818,7 +2868,7 @@ Return ONLY a valid JSON array, no markdown, no explanation:
       system:sys,
       messages:[{role:'user',content:[
         {type:'image',source:{type:'base64',media_type:mtype,data:b64}},
-        {type:'text',text:`Localize all ${diagResult.diseaseName} lesions. Perform grid scan, estimate coordinates carefully, use tight boxes. Return JSON array only.`}
+        {type:'text',text:`Localize all ${diagResult.diseaseName} lesions. Perform a grid scan and estimate coordinates carefully. The primary box must enclose the FULL extent of the affected area (over-cover rather than crop). Return JSON array only.`}
       ]}]
     })
   });
@@ -2839,6 +2889,66 @@ Return ONLY a valid JSON array, no markdown, no explanation:
 }
 
 // ═══════════════════════════════════════════════════
+// 主病灶框扩展：保证主框完整包住客户端像素级检测到的病灶范围
+// （解决"框不全"——尤其黄褐斑/雀斑等弥漫性色素病灶）
+// ═══════════════════════════════════════════════════
+function expandPrimaryToLesion(bboxes, lesionBbox, opts) {
+  opts = opts || {};
+  if (!lesionBbox) return bboxes || [];
+  var pad = opts.pad !== undefined ? opts.pad : 0.03; // 框外再留 3% 余量
+  var cap = opts.cap !== undefined ? opts.cap : 0.94; // 单边最大占图 94%，避免框住整脸
+  bboxes = Array.isArray(bboxes) ? bboxes.slice() : [];
+
+  // 像素病灶范围（加余量）
+  var lx = Math.max(0, lesionBbox.x - pad);
+  var ly = Math.max(0, lesionBbox.y - pad);
+  var lx2 = Math.min(1, lesionBbox.x + lesionBbox.w + pad);
+  var ly2 = Math.min(1, lesionBbox.y + lesionBbox.h + pad);
+
+  // 找主框（无则新建）
+  var pi = bboxes.findIndex(function(b){ return b && b.type === 'primary'; });
+  if (pi < 0) pi = bboxes.length ? 0 : -1;
+
+  if (pi < 0) {
+    bboxes.unshift({ x:lx, y:ly, w:lx2-lx, h:ly2-ly, label:'主病灶', type:'primary', conf:0.8 });
+    return clampBox(bboxes, cap);
+  }
+
+  var p = bboxes[pi];
+  // 取 AI 框与像素框的并集 → 完整包住整个病灶
+  var nx  = Math.min(p.x, lx);
+  var ny  = Math.min(p.y, ly);
+  var nx2 = Math.max(p.x + p.w, lx2);
+  var ny2 = Math.max(p.y + p.h, ly2);
+  p.x = nx; p.y = ny; p.w = nx2 - nx; p.h = ny2 - ny;
+  bboxes[pi] = p;
+  bboxes = clampBox(bboxes, cap);
+
+  // 移除中心落在主框内的冗余次框/疑似框（避免框中套框）
+  var pb = bboxes[pi];
+  bboxes = bboxes.filter(function(b, idx){
+    if (idx === pi || !b) return true;
+    var cxb = b.x + b.w/2, cyb = b.y + b.h/2;
+    var inside = cxb > pb.x && cxb < pb.x+pb.w && cyb > pb.y && cyb < pb.y+pb.h;
+    return !inside;
+  });
+  return bboxes;
+}
+
+function clampBox(bboxes, cap) {
+  bboxes.forEach(function(b){
+    if (!b) return;
+    b.x = Math.max(0, Math.min(1, b.x));
+    b.y = Math.max(0, Math.min(1, b.y));
+    b.w = Math.max(0.02, Math.min(cap, b.w));
+    b.h = Math.max(0.02, Math.min(cap, b.h));
+    if (b.x + b.w > 1) b.x = Math.max(0, 1 - b.w);
+    if (b.y + b.h > 1) b.y = Math.max(0, 1 - b.h);
+  });
+  return bboxes;
+}
+
+// ═══════════════════════════════════════════════════
 // AI 分析
 // ═══════════════════════════════════════════════════
 async function runAnalysis() {
@@ -2847,13 +2957,15 @@ async function runAnalysis() {
   const t0=Date.now();
   let r;
   try {
-    // 阶段1: 图像预处理（增强对比度/锐化，提升病灶可见性）
-    const enhanced = await preprocessImage(imgData);
-    // 阶段1.5: 客户端暗区预检（色素性病灶快速检测，防止误判正常）
-    window._darkLesionDetected = await detectDarkLesion(imgData);
-    // 阶段2: 诊断分析
-    r = await callClaude(enhanced);
-    // 阶段3: 若检测到病变，专项病灶定位（第二次 API，bbox 精度更高）
+    // 阶段1: 图像预处理（白平衡光照归一化 + 对比度/锐化，提升病灶可见性）
+    const enhanced = await preprocessImage(imgData, { whiteBalance:true });
+    // 阶段1.5: 客户端病灶预检（定位色素/红斑异常区域，供裁剪聚焦与防漏诊）
+    const lesionInfo = await detectDarkLesion(imgData);
+    window._lesionInfo = lesionInfo;
+    window._darkLesionDetected = lesionInfo.has;  // 向后兼容 callClaude 内部判定
+    // 阶段2: 多视图集成诊断（全图 + 病灶聚焦放大 + 强对比图，投票聚合）
+    r = await callClaudeEnsemble(enhanced, imgData, lesionInfo);
+    // 阶段3: 若检测到病变，专项病灶定位（额外 API，bbox 精度更高）
     if (r.diagnosis === 'disease') {
       try {
         const refinedBboxes = await callClaudeLocalize(enhanced, r);
@@ -2864,6 +2976,10 @@ async function runAnalysis() {
     }
   }
   catch(e) { console.warn('API fallback:', e); r = simulate(); }
+  // 阶段3.5: 无论真实 API 还是离线 simulate，都保证主框完整包住客户端检测到的病灶范围（解决框不全）
+  if (r && r.diagnosis === 'disease' && window._lesionInfo && window._lesionInfo.bbox) {
+    r.bboxes = expandPrimaryToLesion(r.bboxes, window._lesionInfo.bbox);
+  }
   document.getElementById('loading').style.display='none';
   lastR = r;
   nTotal++; if(r.diagnosis==='disease') nDis++; else nOk++;
@@ -2880,7 +2996,8 @@ async function runAnalysis() {
   if (typeof postAnalysisHook === 'function') postAnalysisHook(r);
 }
 
-async function callClaude(url) {
+async function callClaude(url, opts) {
+  opts = opts || {};
   const b64   = url.split(',')[1];
   const mtype = url.split(';')[0].split(':')[1]||'image/jpeg';
   const reg   = document.querySelector('input[name="reg"]:checked')?.value||'face';
@@ -2957,8 +3074,10 @@ If you observe a DARK BROWN or BLACK focal lesion:
 
 ## BOUNDING BOX RULES:
 - x,y = top-left corner (normalized 0-1), w,h = width/height (normalized 0-1)
-- ALWAYS box any focal lesion found. Tight boxes around lesion boundary, not surrounding skin.
-- Add secondary/suspect boxes for satellite lesions or ambiguous zones.
+- The PRIMARY box must enclose the ENTIRE extent of the affected/lesional skin — its full outer envelope — not just the densest or darkest spot.
+- For DIFFUSE / CONFLUENT / MULTIFOCAL lesions (melasma, freckles/lentigines, post-inflammatory hyperpigmentation, widespread eczema/erythema), draw ONE large primary box that covers ALL involved skin from the outermost lesion edge to edge. It is better to slightly over-cover than to leave lesion outside the box.
+- Only use a small tight box for a single DISCRETE lesion (a solitary mole, nodule, or ulcer).
+- Use secondary/suspect boxes for clearly separate satellite lesions located outside the primary region.
 
 Return ONLY valid JSON (no markdown, no text outside JSON):
 {
@@ -2996,6 +3115,7 @@ Category map: 0=感染性, 1=过敏/炎症, 2=慢性/免疫, 3=皮脂腺/痤疮,
     body:JSON.stringify({
       model:'claude-sonnet-4-20250514',
       max_tokens:1800,
+      temperature: opts.temperature !== undefined ? opts.temperature : 0,
       system:sys,
       messages:[{role:'user',content:[
         {type:'image',source:{type:'base64',media_type:mtype,data:b64}},
@@ -3003,7 +3123,7 @@ Category map: 0=感染性, 1=过敏/炎症, 2=慢性/免疫, 3=皮脂腺/痤疮,
           // Client-side pigment pre-check: tell AI about any dark region detected
           const darkHint = window._darkLesionDetected ?
             'IMPORTANT: A dark pigmented focal lesion has been detected in this image by pre-analysis. Do NOT classify as normal — identify the lesion type (melanocytic_nevi, melanoma, ephelides, melasma, etc).' : '';
-          return `Analyze this skin image step by step: (1) scan for any focal abnormality, (2) characterize the lesion if found, (3) provide diagnosis. Body region: ${REG_LBL[reg]}. Spectrum: ${spec}. TTA×5 ensemble. ${darkHint} Return valid JSON only.`;
+          return `Analyze this skin image step by step: (1) scan for any focal abnormality, (2) characterize the lesion if found, (3) provide diagnosis. Body region: ${REG_LBL[reg]}. Spectrum: ${spec}. View: ${opts.viewLabel||'full image'}. ${darkHint} Return valid JSON only.`;
         })()}
       ]}]
     })
@@ -3062,6 +3182,87 @@ Category map: 0=感染性, 1=过敏/炎症, 2=慢性/免疫, 3=皮脂腺/痤疮,
   };
 }
 
+// ═══════════════════════════════════════════════════
+// 真·多视图集成推理（Test-Time Augmentation / Self-Consistency）
+// 对同一张图生成多个不同视图，分别推理后投票聚合，显著降低单次误判
+// ═══════════════════════════════════════════════════
+async function callClaudeEnsemble(enhancedFull, originalImg, lesionInfo) {
+  // 1) 构建多个差异化视图（真实的 TTA，而非单次调用）
+  const views = [];
+  views.push({ url: enhancedFull, label: 'full image (white-balanced)' });
+
+  // 视图2：病灶聚焦裁剪放大——皮损占满画面，分类最准
+  if (lesionInfo && lesionInfo.bbox) {
+    try {
+      const cropped = await cropToLesion(originalImg, lesionInfo.bbox);
+      const croppedEnh = await preprocessImage(cropped, { whiteBalance:true });
+      views.push({ url: croppedEnh, label: 'lesion-focused crop (zoomed)' });
+    } catch(e) {}
+  }
+
+  // 视图3：强对比 + 锐化的全图视图，强化纹理/边界线索
+  try {
+    const hiContrast = await preprocessImage(originalImg, { whiteBalance:true, contrast:1.4, sharpen:0.5 });
+    views.push({ url: hiContrast, label: 'high-contrast full image' });
+  } catch(e) {}
+
+  // 2) 并行推理（温度0，确定性；差异来自不同视图而非随机性）
+  const settled = await Promise.allSettled(
+    views.map(v => callClaude(v.url, { temperature: 0, viewLabel: v.label }))
+  );
+  const results = settled.filter(s => s.status === 'fulfilled').map(s => s.value);
+  if (results.length === 0) throw new Error('All ensemble views failed');
+  if (results.length === 1) return results[0]; // 仅一个成功，直接返回
+
+  // 3) 聚合：诊断投票 + 病种多数表决
+  const n = results.length;
+  const diseaseVotes = results.filter(r => r.diagnosis === 'disease');
+  const maxDiseaseConf = diseaseVotes.reduce((m,r)=>Math.max(m,r.conf||0), 0);
+  // 筛查倾向：多数判病，或任一视图高置信度判病(≥0.8) → 判为病变（降低漏诊）
+  const isDisease = diseaseVotes.length >= Math.ceil(n/2) ||
+                    (diseaseVotes.length >= 1 && maxDiseaseConf >= 0.8);
+
+  if (!isDisease) {
+    // 多数判正常：取置信度最高的正常结果
+    const normals = results.filter(r => r.diagnosis === 'normal');
+    const base = normals.sort((a,b)=>(b.conf||0)-(a.conf||0))[0] || results[0];
+    base.diagnosis = 'normal';
+    base.conf = normals.reduce((s,r)=>s+(r.conf||0),0) / Math.max(1,normals.length);
+    base.needReview = base.needReview || (diseaseVotes.length > 0); // 有分歧则标记复核
+    base.aiNote = (base.aiNote||'') + `（集成${n}视图：${normals.length}/${n}判正常）`;
+    return base;
+  }
+
+  // 4) 病变：对病种做多数表决，平票时按置信度之和取胜
+  const tally = {};
+  diseaseVotes.forEach(r => {
+    const k = r.diseaseKey || 'eczema';
+    tally[k] = tally[k] || { count:0, confSum:0 };
+    tally[k].count++; tally[k].confSum += (r.conf||0);
+  });
+  let winnerKey = null, best = { count:-1, confSum:-1 };
+  Object.keys(tally).forEach(k => {
+    const t = tally[k];
+    if (t.count > best.count || (t.count === best.count && t.confSum > best.confSum)) {
+      best = t; winnerKey = k;
+    }
+  });
+
+  // 取胜出病种中置信度最高的那次结果作为代表（保留其 bbox/EASI 等细节）
+  const winners = diseaseVotes.filter(r => (r.diseaseKey||'eczema') === winnerKey)
+                              .sort((a,b)=>(b.conf||0)-(a.conf||0));
+  const rep = winners[0];
+
+  // 置信度 = 一致视图的平均置信度 × 共识比例（分歧越大置信度越低）
+  const agreeRatio = best.count / n;
+  rep.conf = Math.min(0.97, (best.confSum / best.count) * (0.6 + 0.4*agreeRatio));
+  // 不一致或高风险 → 强制人工复核
+  const isHR = ['melanoma','bcc','scc'].includes(winnerKey);
+  rep.needReview = rep.needReview || best.count < n || isHR || rep.conf < (isHR?0.8:0.65);
+  rep.aiNote = (rep.aiNote||'') + `（集成${n}视图共识：${best.count}/${n} → ${DISEASE_DB[winnerKey]?.name||winnerKey}）`;
+  return rep;
+}
+
 function simulate() {
   const keys = Object.keys(DISEASE_DB);
   const isDis = Math.random()<.65;
@@ -3076,8 +3277,14 @@ function simulate() {
   const pig   = isDis ? Math.floor(Math.random()*3) : 0;
   const eT    = easiA*(easiE+1);
 
+  // 主框优先采用客户端像素检测到的真实病灶范围（离线演示也能框全）；无则回退随机
+  var _li = (window._lesionInfo && window._lesionInfo.bbox) ? window._lesionInfo.bbox : null;
+  var primaryBox = _li
+    ? {x:_li.x, y:_li.y, w:_li.w, h:_li.h, label:'主病灶', type:'primary', conf}
+    : {x:.22+Math.random()*.15,y:.22+Math.random()*.15,w:.22+Math.random()*.1,h:.18+Math.random()*.1,label:'主病灶',type:'primary',conf};
+
   const bboxes = isDis ? [
-    {x:.22+Math.random()*.15,y:.22+Math.random()*.15,w:.22+Math.random()*.1,h:.18+Math.random()*.1,label:'主病灶',type:'primary',conf},
+    primaryBox,
     ...(sev>=1?[{x:.55+Math.random()*.1,y:.52+Math.random()*.1,w:.11,h:.09,label:'次病灶',type:'secondary',conf:.6+Math.random()*.2}]:[]),
     ...(sev>=2?[{x:.12+Math.random()*.1,y:.6+Math.random()*.1,w:.09,h:.08,label:'疑似区域',type:'suspect',conf:.5+Math.random()*.2}]:[]),
   ] : [];
