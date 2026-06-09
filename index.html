@@ -2710,34 +2710,44 @@ function detectDarkLesion(dataUrl) {
       lums.sort(function(a,b){return a-b;});
       var skinMed = lums[Math.floor(lums.length/2)] || 128;
 
-      // 2. 分块扫描，标记"色素块"(棕色斑/比肤色暗) 与 "红斑块"
+      // 2. 分块扫描，标记"色素块"(棕色斑/比肤色暗) 与 "红斑块"，同时累积分类特征
       var bs = Math.max(4, Math.round(Math.min(W,H)*0.05)); // 较细的网格
       var nbx = Math.floor((W-2*m)/bs), nby = Math.floor((H-2*m)/bs);
       var map = [];                  // 异常块布尔图
-      var abnormalBlocks=0, totalBlocks=0, redBlocks=0;
+      var abnormalBlocks=0, totalBlocks=0, redBlocks=0, pigBlocks=0, veryDarkBlocks=0, brightBlocks=0;
+      var brownSum=0, brownSqSum=0;            // 棕色度(R-B) 统计 → 多色性
+      var eryeSum=0;                            // 红斑强度(R-G) 统计
+      var blkL=[], blkAbn=[];                   // 块亮度 / 是否异常（供 bbox 内统计）
       for (var gy=0; gy<nby; gy++) {
-        map[gy]=[];
+        map[gy]=[]; blkL[gy]=[]; blkAbn[gy]=[];
         for (var gx=0; gx<nbx; gx++) {
           var sx0=m+gx*bs, sy0=m+gy*bs, sr=0,sg=0,sb=0,cnt=0;
           for (var dy=0; dy<bs; dy++) for (var dx=0; dx<bs; dx++) {
             var bi=((sy0+dy)*W+(sx0+dx))*4; sr+=d[bi]; sg+=d[bi+1]; sb+=d[bi+2]; cnt++;
           }
           var mr=sr/cnt, mg=sg/cnt, mb=sb/cnt, ml=(mr+mg+mb)/3;
+          var maxc=Math.max(mr,mg,mb), minc=Math.min(mr,mg,mb), sat=maxc-minc;
           // 色素块：明显比肤色暗(<90%中位) 但不过暗(>42%中位，排除头发/眉毛/鼻孔阴影)，且偏肤色(R≥B)
           var pigment = (ml < skinMed*0.90) && (ml > skinMed*0.42) && (mr >= mb-8);
           // 红斑块：红色明显高于绿蓝
           var red = (mr>160 && mr-mg>32 && mr-mb>32);
-          var abn = pigment || red;
-          map[gy][gx]=abn; totalBlocks++;
+          // 极暗块（潜在恶性深色素/痣中心），限肤色避免头发
+          var veryDark = (ml <= skinMed*0.42) && (ml > skinMed*0.20) && (mr >= mb-8);
+          // 亮+低饱和块（色素减退/白癜风）
+          var bright = (ml > skinMed*1.12) && (sat < 26) && (ml < 252);
+          var abn = pigment || red || veryDark;
+          map[gy][gx]=abn; blkAbn[gy][gx]=abn; blkL[gy][gx]=ml; totalBlocks++;
           if (abn) abnormalBlocks++;
-          if (red) redBlocks++;
+          if (pigment) { pigBlocks++; brownSum+=(mr-mb); brownSqSum+=(mr-mb)*(mr-mb); }
+          if (red) { redBlocks++; eryeSum+=(mr-mg); }
+          if (veryDark) veryDarkBlocks++;
+          if (bright) brightBlocks++;
         }
       }
       var darkRatio = abnormalBlocks/Math.max(1,totalBlocks);
       var redRatio  = redBlocks/Math.max(1,totalBlocks);
 
       // 3. 密度投影：按列/行统计异常块密度，取密度≥峰值15%的连续跨度作为病灶范围
-      //    （这样既能覆盖整片弥漫色斑，又能忽略边缘零星杂点/碎发）
       var colD=new Array(nbx).fill(0), rowD=new Array(nby).fill(0);
       for (var gy2=0; gy2<nby; gy2++) for (var gx2=0; gx2<nbx; gx2++) {
         if (map[gy2][gx2]) { colD[gx2]++; rowD[gy2]++; }
@@ -2751,19 +2761,161 @@ function detectDarkLesion(dataUrl) {
       }
       var cs=spanOf(colD,thrC), rs=spanOf(rowD,thrR);
 
-      var hasLesion = (darkRatio>0.015 && darkRatio<0.75) || redRatio>0.02;
+      var hasLesion = (darkRatio>0.015 && darkRatio<0.85) || redRatio>0.02 || brightBlocks/Math.max(1,totalBlocks)>0.03;
       var bbox=null;
       if (hasLesion && cs[0]>=0 && rs[0]>=0) {
         var x1=(m+cs[0]*bs)/W,        y1=(m+rs[0]*bs)/H;
         var x2=(m+(cs[1]+1)*bs)/W,    y2=(m+(rs[1]+1)*bs)/H;
         bbox={ x:x1, y:y1, w:Math.max(0.02,x2-x1), h:Math.max(0.02,y2-y1) };
       }
-      resolve({ has:hasLesion, bbox:bbox, darkRatio:darkRatio, redRatio:redRatio });
+
+      // 4. bbox 内的形态学特征：密度(融合 vs 散在)、左右/上下不对称、边界复杂度
+      var density=0, asymLR=0, asymTB=0, edgeComplex=0;
+      if (cs[0]>=0 && rs[0]>=0) {
+        var bxBlk=0, bxAbn=0, leftM=0, rightM=0, topM=0, botM=0, perim=0;
+        var midX=(cs[0]+cs[1])/2, midY=(rs[0]+rs[1])/2;
+        for (var yy=rs[0]; yy<=rs[1]; yy++) for (var xx=cs[0]; xx<=cs[1]; xx++) {
+          bxBlk++;
+          if (blkAbn[yy] && blkAbn[yy][xx]) {
+            bxAbn++;
+            if (xx<midX) leftM++; else rightM++;
+            if (yy<midY) topM++; else botM++;
+            // 边界块：4邻域存在非异常块
+            var nb=false;
+            if(!(blkAbn[yy-1]&&blkAbn[yy-1][xx])) nb=true;
+            if(!(blkAbn[yy+1]&&blkAbn[yy+1][xx])) nb=true;
+            if(!(blkAbn[yy][xx-1])) nb=true;
+            if(!(blkAbn[yy][xx+1])) nb=true;
+            if(nb) perim++;
+          }
+        }
+        density   = bxAbn/Math.max(1,bxBlk);
+        asymLR    = Math.abs(leftM-rightM)/Math.max(1,bxAbn);
+        asymTB    = Math.abs(topM-botM)/Math.max(1,bxAbn);
+        edgeComplex = perim/Math.max(1,bxAbn);     // 高=边界破碎/散在；低=边缘光滑成片
+      }
+      var brownMean = pigBlocks? brownSum/pigBlocks : 0;
+      var brownStd  = pigBlocks? Math.sqrt(Math.max(0, brownSqSum/pigBlocks - brownMean*brownMean)) : 0;
+      var multichrome = brownMean>1 ? brownStd/brownMean : 0;   // 色素多色性 → 黑色素瘤线索
+      var erythema  = redBlocks? (eryeSum/redBlocks)/80 : 0;     // 0..~1 红斑强度
+
+      var features = {
+        pigmentRatio: pigBlocks/Math.max(1,totalBlocks),
+        redRatio: redRatio,
+        veryDarkRatio: veryDarkBlocks/Math.max(1,totalBlocks),
+        brightRatio: brightBlocks/Math.max(1,totalBlocks),
+        abnRatio: darkRatio,
+        coverage: bbox? bbox.w*bbox.h : 0,
+        density: density,             // 融合(>0.45) vs 散在(<0.35)
+        asymLR: asymLR, asymTB: asymTB,
+        edgeComplex: edgeComplex,     // 边界复杂度
+        brownness: brownMean,
+        multichrome: multichrome,
+        erythema: Math.min(1,erythema)
+      };
+
+      resolve({ has:hasLesion, bbox:bbox, darkRatio:darkRatio, redRatio:redRatio, features:features });
     };
-    img.onerror = function() { resolve({ has:false, bbox:null }); };
+    img.onerror = function() { resolve({ has:false, bbox:null, features:null }); };
     img.src = dataUrl;
   });
 }
+
+// ═══════════════════════════════════════════════════
+// 离线特征分类器：无 API 时根据图像特征确定性识别（取代随机 simulate）
+// 说明：基于颜色/形态统计的启发式代理，非深度模型；仅用于筛查/教学
+// ═══════════════════════════════════════════════════
+function classifyByFeatures(f, region) {
+  if (!f) return null;
+  region = region || 'face';
+  var S = {}; // 各疾病得分
+
+  // —— 正常 ——
+  var quiet = (f.abnRatio < 0.035 && f.redRatio < 0.02 && f.brightRatio < 0.03 && f.veryDarkRatio < 0.01);
+  S.normal = quiet ? 1.0 : Math.max(0, 0.5 - f.abnRatio*4 - f.redRatio*6);
+
+  var pig = f.pigmentRatio, focal = (f.coverage>0 && f.coverage<0.10);
+
+  // —— 色素性 ——
+  // 黄褐斑：成片融合的棕色色素、覆盖大、低红、色调较均一
+  S.melasma = clamp01(
+    pig*4 + (f.density>0.45?0.4:0) + (f.coverage>0.12?0.35:0) + (f.brownness>12?0.2:0)
+    - (f.redRatio>0.05?0.5:0) - (f.multichrome>0.7?0.3:0) - (focal?0.4:0)
+  );
+  // 雀斑：散在多发的小色素点、密度低、覆盖中等偏大
+  S.ephelides = clamp01(
+    pig*3.5 + (f.density<0.4?0.45:0) + (f.edgeComplex>0.5?0.35:0) + (f.coverage>0.08?0.2:0)
+    - (f.redRatio>0.05?0.4:0) - (f.density>0.6?0.4:0)
+  );
+  // 黑素细胞痣：局灶单发、密度高、色调均一、对称
+  S.melanocytic_nevi = clamp01(
+    (focal?0.6:0) + pig*2 + (f.density>0.5?0.3:0) + (f.multichrome<0.5?0.2:0)
+    + ((f.asymLR<0.35&&f.asymTB<0.35)?0.2:0) - (f.coverage>0.2?0.4:0)
+  );
+  // 黑色素瘤(可疑)：局灶色素 + 多色/不对称/边界破碎/深色素
+  S.melanoma = clamp01(
+    (pig>0.02?0.3:0) + (f.multichrome>0.7?0.5:0) + (f.asymLR>0.45||f.asymTB>0.45?0.35:0)
+    + (f.edgeComplex>0.7?0.3:0) + (f.veryDarkRatio>0.02?0.4:0) - (f.density>0.7&&f.multichrome<0.4?0.4:0)
+  );
+  // —— 色素减退 ——
+  S.vitiligo = clamp01(
+    f.brightRatio*5 + (f.edgeComplex<0.6?0.25:0) - (f.redRatio>0.04?0.4:0) - (pig>0.06?0.3:0)
+  );
+  S.hypopigmentation = clamp01(
+    f.brightRatio*4 + (f.edgeComplex>0.6?0.2:0) - (f.brightRatio>0.12?0.3:0)
+  );
+
+  // —— 红斑/炎症性 ——
+  var red = f.redRatio;
+  // 酒渣鼻：面中部弥漫红斑、强度高、成片
+  S.rosacea = clamp01(
+    red*6 + f.erythema*0.5 + (region==='face'?0.25:0) + (f.density>0.4?0.2:0) - (pig>0.08?0.3:0)
+  );
+  // 丘脓型痤疮：多发散在红色丘疹/脓疱
+  S.acne_papulopustular = clamp01(
+    red*5 + (f.density<0.45?0.3:0) + (f.edgeComplex>0.5?0.25:0) + (region==='face'?0.15:0)
+  );
+  // 囊肿性痤疮：局灶强红斑、强度高
+  S.acne_cystic = clamp01(
+    red*4 + f.erythema*0.6 + (focal?0.3:0) - (f.coverage>0.25?0.3:0)
+  );
+  // 湿疹：边界不清的弥漫红斑（边界复杂度高）
+  S.eczema = clamp01(
+    red*5 + (f.edgeComplex>0.65?0.4:0) + (f.density<0.6?0.2:0) - (f.density>0.7?0.3:0)
+  );
+  // 银屑病：边界清晰成片红斑（边界复杂度低、密度高）
+  S.psoriasis = clamp01(
+    red*5 + (f.edgeComplex<0.55?0.35:0) + (f.density>0.55?0.3:0) + (f.coverage>0.1?0.2:0)
+  );
+  // 荨麻疹：浅淡弥漫红/粉、强度中等
+  S.urticaria = clamp01(
+    red*4 + (f.erythema<0.5?0.25:0) + (f.edgeComplex>0.5?0.2:0) - (pig>0.06?0.3:0)
+  );
+
+  // 选最高分
+  var keys=Object.keys(S);
+  keys.sort(function(a,b){return S[b]-S[a];});
+  var topKey=keys[0], topScore=S[topKey], second=S[keys[1]]||0;
+
+  // 若最高仍很弱 → 判正常 / 需复核
+  if (topKey!=='normal' && topScore<0.35) topKey='normal';
+  var isDis = topKey!=='normal';
+  // 置信度：基于得分强度与与次选的差距（确定性、可复现）
+  var conf = isDis
+    ? clamp(0.55 + topScore*0.3 + (topScore-second)*0.25, 0.55, 0.94)
+    : clamp(0.7 + (S.normal)*0.2, 0.6, 0.95);
+
+  var top3 = keys.filter(function(k){return k!=='normal';}).slice(0,3).map(function(k,idx){
+    return { key:k, name:(DISEASE_DB[k]?DISEASE_DB[k].name:k),
+             confidence: clamp(conf-idx*(0.06+Math.random()*0.03), 0.3, 0.96) };
+  });
+
+  return { key: isDis?topKey:'normal', conf: conf, isDis: isDis, top3: isDis?top3:[],
+           // 透传部分特征，便于生成评分文本
+           erythema: f.erythema, multichrome: f.multichrome, suspectMalignant: (topKey==='melanoma') };
+}
+function clamp01(v){ return Math.max(0, Math.min(1, v)); }
+function clamp(v,lo,hi){ return Math.max(lo, Math.min(hi, v)); }
 
 // ═══════════════════════════════════════════════════
 // 病灶聚焦裁剪：以病灶为中心裁剪并放大，使病灶占满画面
@@ -3265,16 +3417,21 @@ async function callClaudeEnsemble(enhancedFull, originalImg, lesionInfo) {
 
 function simulate() {
   const keys = Object.keys(DISEASE_DB);
-  const isDis = Math.random()<.65;
-  const key = isDis ? keys[Math.floor(Math.random()*keys.length)] : 'normal';
+  const region = document.querySelector('input[name="reg"]:checked')?.value||'face';
+  // 离线时：基于客户端图像特征确定性识别（取代随机）
+  const F  = (window._lesionInfo && window._lesionInfo.features) ? window._lesionInfo.features : null;
+  const cls = F ? classifyByFeatures(F, region) : null;
+  const isDis = cls ? cls.isDis : (Math.random()<.65);
+  const key = cls ? cls.key : (isDis ? keys[Math.floor(Math.random()*keys.length)] : 'normal');
   const dInfo = DISEASE_DB[key]||{color:'#10b981',sev:0,cat:6};
-  const conf = isDis ? .62+Math.random()*.3 : .72+Math.random()*.22;
+  const conf = cls ? cls.conf : (isDis ? .62+Math.random()*.3 : .72+Math.random()*.22);
   const sev  = isDis ? dInfo.sev : 0;
-  const areaR = isDis ? .05+Math.random()*.35 : .01+Math.random()*.04;
+  // 面积/红斑/色素评分尽量取自真实特征
+  const areaR = F ? Math.max(.02, Math.min(.6, F.coverage||0)) : (isDis ? .05+Math.random()*.35 : .01+Math.random()*.04);
   const easiA = areaR<.01?0:areaR<.1?1:areaR<.3?2:areaR<.5?3:4;
-  const eryI  = isDis ? .45+Math.random()*.4 : .1+Math.random()*.15;
+  const eryI  = F ? Math.max(.1, Math.min(.95, F.erythema||0)) : (isDis ? .45+Math.random()*.4 : .1+Math.random()*.15);
   const easiE = Math.min(3,Math.floor(eryI*4));
-  const pig   = isDis ? Math.floor(Math.random()*3) : 0;
+  const pig   = F ? Math.min(3, Math.round((F.pigmentRatio||0)*8 + (F.multichrome||0))) : (isDis ? Math.floor(Math.random()*3) : 0);
   const eT    = easiA*(easiE+1);
 
   // 主框优先采用客户端像素检测到的真实病灶范围（离线演示也能框全）；无则回退随机
@@ -3289,10 +3446,10 @@ function simulate() {
     ...(sev>=2?[{x:.12+Math.random()*.1,y:.6+Math.random()*.1,w:.09,h:.08,label:'疑似区域',type:'suspect',conf:.5+Math.random()*.2}]:[]),
   ] : [];
 
-  const top3 = isDis ? [
+  const top3 = cls && cls.top3 && cls.top3.length ? cls.top3 : (isDis ? [
     {key,name:dInfo.name||key,confidence:conf},
     ...keys.slice(0,2).map(k=>({key:k,name:DISEASE_DB[k]?.name||k,confidence:conf-(.1+Math.random()*.1)}))
-  ] : [];
+  ] : []);
 
   return {
     diagnosis: isDis?'disease':'normal', conf, color: isDis?dInfo.color:'#10b981',
@@ -3302,14 +3459,14 @@ function simulate() {
     category:dInfo.cat||6, area:`约${Math.round(areaR*100)}%`,
     areaRatio:areaR, easiArea:easiA, erythemaIntensity:eryI,
     easiErythema:easiE, pigmentScore:pig, easiTotal:eT,
-    symmetry:isDis?(Math.random()>.45?'不对称':'对称'):'对称',
-    border:isDis?(Math.random()>.5?'不规则':'锯齿状'):'规则',
-    colorUniform:isDis?(Math.random()>.5?'不均匀':'多色'):'均匀',
+    symmetry: isDis ? ((F? (F.asymLR>0.4||F.asymTB>0.4):Math.random()>.45)?'不对称':'对称') : '对称',
+    border:  isDis ? ((F? (F.edgeComplex>0.6):Math.random()>.5)?'不规则':'锯齿状') : '规则',
+    colorUniform: isDis ? ((F? (F.multichrome>0.6):Math.random()>.5)?'多色':'不均匀') : '均匀',
     sceScore: conf-.05+Math.random()*.1,
-    needReview: conf<.6,
-    risk: sev>=2?'high':sev>=1?'moderate':'low',
+    needReview: (cls&&cls.suspectMalignant) ? true : conf<.62,
+    risk: (cls&&cls.suspectMalignant)?'high':(sev>=2?'high':sev>=1?'moderate':'low'),
     aiNote: isDis
-      ? `检测到${dInfo.name||key}样皮损，EASI估算评分${eT}分，病灶面积约${Math.round(areaR*100)}%。建议专业皮肤科医生进一步评估，结合临床症状确诊。`
+      ? `检测到${dInfo.name||key}样皮损，EASI估算评分${eT}分，病灶面积约${Math.round(areaR*100)}%。${(cls&&cls.suspectMalignant)?'⚠️ 病灶呈现不对称/多色/边界不规则等可疑特征，强烈建议尽快至皮肤科活检评估。':'建议专业皮肤科医生进一步评估，结合临床症状确诊。'}`
       : '皮肤状态良好，未见明显病变征象。建议保持规律护肤，定期自查。',
     top3, bboxes,
     gradcamInfo: isDis?`GradCAM模型注意力集中于${Math.round(areaR*100)}%的红斑区域，边界不规则区域激活值最高。`:'无明显激活热点，皮肤状态正常。',
