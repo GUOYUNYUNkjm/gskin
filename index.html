@@ -7,8 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;600;700&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<!-- TensorFlow.js：运行真实训练好的皮肤病变模型（纯前端推理） -->
-<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js"></script>
+<!-- 皮肤病变模型推理库（onnxruntime-web；旧模型回退时用 TF.js）由 loadSkinModel() 按需加载 -->
 <script>
 // ═══════════════════════════════════════════════════════════════
 // 摄像头实时监测模块
@@ -187,7 +186,7 @@ async function analyzeFrame(snapUrl) {
     // 摄像头帧也进行轻度预处理（仅增强，不锐化以保持速度）
     let enhancedSnap = snapUrl;
     try { enhancedSnap = await preprocessImage(snapUrl, {contrast:1.15, brightness:3, sharpen:0}); } catch(pe){}
-    if (window._skinModel) r = await classifyFrameWithModel(enhancedSnap);   // 真实模型逐帧推理
+    if (window._skinModel) r = await classifyFrameWithModel(snapUrl);   // 真实模型逐帧推理（原图）
     else r = await callClaudeFrame(enhancedSnap);
   }
   catch(e) { r = simulateCamFrame(); }
@@ -520,7 +519,7 @@ const I18N = {
     upload:'图像上传', upload_btn:'上传皮肤图像', demo_btn:'演示图像',
     params:'检查参数', region:'检查部位', spectrum:'光谱模式',
     ai_analysis:'AI 分析', start_btn:'开始AI检测（TTA×5）',
-    model_sub:'MobileNet·HAM10000 + 5-fold TTA推理',
+    model_sub:'MobileNet·HAM10000 · TTA×5 推理',
     live_diag:'实时诊断', confidence:'AI置信度', severity:'严重度评级',
     review_flag:'⚠️ 置信度低于60%，建议人工复核',
     clinical:'临床指标', sce:'SCE 鲁棒性评分',
@@ -608,7 +607,7 @@ const I18N = {
     upload:'Upload Image', upload_btn:'Upload Skin Image', demo_btn:'Demo Image',
     params:'Parameters', region:'Body Region', spectrum:'Spectrum Mode',
     ai_analysis:'AI Analysis', start_btn:'Start AI Detection (TTA×5)',
-    model_sub:'MobileNet·HAM10000 + 5-fold TTA inference',
+    model_sub:'MobileNet·HAM10000 · TTA×5 inference',
     live_diag:'Live Diagnosis', confidence:'AI Confidence', severity:'Severity',
     review_flag:'⚠️ Confidence < 60%, manual review recommended',
     clinical:'Clinical Metrics', sce:'SCE Robustness Score',
@@ -692,7 +691,7 @@ const I18N = {
     upload:'이미지 업로드', upload_btn:'피부 이미지 업로드', demo_btn:'데모 이미지',
     params:'검사 설정', region:'검사 부위', spectrum:'스펙트럼 모드',
     ai_analysis:'AI 분석', start_btn:'AI 검사 시작 (TTA×5)',
-    model_sub:'MobileNet·HAM10000 + 5-fold TTA 추론',
+    model_sub:'MobileNet·HAM10000 · TTA×5 추론',
     live_diag:'실시간 진단', confidence:'AI 신뢰도', severity:'중증도',
     review_flag:'⚠️ 신뢰도 60% 미만, 수동 검토 권장',
     clinical:'임상 지표', sce:'SCE 견고성 점수',
@@ -2195,7 +2194,7 @@ tr:hover td{background:var(--bg)}
   <div class="sb-sec">
     <h4 data-i18n="ai_analysis">AI 分析</h4>
     <button class="btn btn-a btn-w" style="font-size:13px;padding:10px" onclick="runAnalysis()">🔬 开始AI检测（TTA×5）</button>
-    <div style="font-size:10px;color:var(--text3);text-align:center;margin-top:4px"><span data-i18n="model_sub">MobileNet·HAM10000 + 5-fold TTA推理</span></div>
+    <div style="font-size:10px;color:var(--text3);text-align:center;margin-top:4px"><span data-i18n="model_sub">MobileNet·HAM10000 · TTA×5 推理</span></div>
   </div>
 
   <!-- 诊断结果 -->
@@ -2394,7 +2393,7 @@ tr:hover td{background:var(--bg)}
     <span>  <span data-i18n="st_ok">正常</span> <strong id="st-ok">0</strong></span>
     <span><span data-i18n="st_rev">复核提示</span> <strong id="st-rev">0</strong></span>
     <span><span data-i18n="st_time">平均耗时</span> <strong id="st-t">—</strong></span>
-    <span><span data-i18n="st_model">模型</span> <strong>MobileNet·HAM10000</strong></span>
+    <span><span data-i18n="st_model">模型</span> <strong id="st-model-name">MobileNet·HAM10000</strong></span>
     <span><span data-i18n="st_spec_lbl">光谱</span> <strong id="st-spec">RGB</strong></span>
     <span>TTA <strong>×5</strong></span>
   </div>
@@ -3199,8 +3198,8 @@ async function runAnalysis() {
     window._darkLesionDetected = lesionInfo.has;  // 向后兼容 callClaude 内部判定
     // 阶段2: 诊断
     if (window._skinModel) {
-      // ① 首选：真实训练模型（HAM10000 / MobileNet，TTA×5，纯前端推理）
-      r = await classifyWithModel(enhanced, lesionInfo, 5);
+      // ① 首选：真实训练模型（HAM10000，TTA×5，纯前端推理）；传原图，预处理在模型内部完成
+      r = await classifyWithModel(imgData, lesionInfo, 5);
     } else {
       // ② 模型未就绪时回退：Claude API 集成 → 离线启发式
       try {
@@ -3680,9 +3679,11 @@ function drawHeat(r) {
   cv.width=W; cv.height=H;
   const ctx=cv.getContext('2d');
   ctx.clearRect(0,0,W,H);
+  // 真实模型输出的 CAM（ONNX 模型）→ 直接绘制；否则退回示意热力图
+  if(r.cam && r.cam.data && r.cam.rect && typeof drawRealCam==='function'){ drawRealCam(ctx, r.cam, W, H); return; }
   if(r.diagnosis!=='disease'||!r.bboxes?.length) return;
 
-  // 模拟 GradCAM 激活热力图
+  // 模拟 GradCAM 激活热力图（仅 API / 启发式结果使用）
   r.bboxes.forEach(b=>{
     const cx=(b.x+b.w/2)*W, cy=(b.y+b.h/2)*H;
     const rad=Math.max(b.w,b.h)*Math.max(W,H)*.65;
@@ -3995,15 +3996,20 @@ function buildSpectrumGrid() {
 }
 
 // ════════════════════════════════════════════════════════════════════
-//  真·训练模型推理模块：HAM10000 七分类（MobileNet, TensorFlow.js）
-//  模型来源：vbookshelf/Skin-Lesion-Analyzer（Apache-2.0）。
-//  说明：纯前端推理，图像不上传任何服务器；皮肤癌/色素病变 7 类。
-//  部署：把 skin_model/ 文件夹（model.json + 4 个权重分片）放在与本页同目录。
+//  真·训练模型推理模块（v6）：HAM10000 七分类，纯前端推理，图像不上传任何服务器
+//  ① 首选：ONNX 模型 skin_model/meta.json + skin_model.onnx（train_skin.py 训练导出，onnxruntime-web 运行）
+//     预处理（Shades-of-Gray 颜色恒常性 + 归一化）在模型图内完成，TTA 视图顺序与训练脚本逐像素一致；
+//     模型额外输出 CAM 类激活图 → 热力图为真实模型输出
+//  ② 回退：旧版 TF.js MobileNet（skin_model/model.json，vbookshelf/Skin-Lesion-Analyzer，Apache-2.0）
+//  ③ 再回退：Claude API / 离线启发式（由调用方 runAnalysis / analyzeFrame 处理）
 // ════════════════════════════════════════════════════════════════════
 window._skinModel = null;
 window._modelReady = false;
 window._modelError = null;
-var SKIN_MODEL_URL = './skin_model/model.json';   // 同目录相对路径，避免跨域
+window._modelMeta = null;
+var SKIN_MODEL_DIR = window.SKIN_MODEL_DIR || './skin_model/';          // 同目录相对路径，避免跨域
+var ORT_BASE_URL  = window.ORT_BASE_URL  || 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/';
+var TFJS_URL      = window.TFJS_URL      || 'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js';
 
 // HAM10000 索引(0..6) → 应用内 DISEASE_DB 键 + 三语名 + 良恶性 + 严重度
 var HAM_CLASSES = [
@@ -4015,6 +4021,11 @@ var HAM_CLASSES = [
   {ham:'nv',    key:'melanocytic_nevi', zh:'黑素细胞痣',          en:'Melanocytic nevus',         ko:'흑색세포모반',        malignant:false, sev:0},
   {ham:'vasc',  key:'vasc',             zh:'血管性病变',          en:'Vascular lesion',           ko:'혈관병변',            malignant:false, sev:0}
 ];
+
+function _curLang(){ try { return currentLang || 'zh'; } catch(e){ return 'zh'; } }
+function _modelLabel(){ return (window._modelMeta && window._modelMeta.display_name) || 'MobileNet·HAM10000'; }
+function _pct(v){ return (v==null||isNaN(v)) ? '—' : (v*100).toFixed(1)+'%'; }
+function _pctShort(v){ return (v*100).toFixed(1)+'%'; }
 
 function _modelChip(){
   var el=document.getElementById('model-status-chip');
@@ -4031,27 +4042,116 @@ function _modelChip(){
 function setModelStatus(state, pct){
   var el=_modelChip();
   if(state==='loading') el.innerHTML='⏳ 模型加载中… '+(pct!=null?Math.round(pct*100)+'%':'');
-  else if(state==='ready'){ el.innerHTML='🟢 真实模型已加载 · HAM10000(7类)'; setTimeout(function(){ el.style.opacity='0.35'; },4000); }
+  else if(state==='ready'){
+    var m = window._modelMeta && window._modelMeta.metrics, extra='';
+    if (m && m.test_balanced_accuracy!=null) extra=' · 独立测试集平衡准确率 '+_pct(m.test_balanced_accuracy);
+    el.innerHTML='🟢 真实模型已加载 · '+_modelLabel()+'（7类）'+extra;
+    el.title = m ? ('测试集 '+(m.test_n_images||'')+' 张 · 准确率 '+_pct(m.test_accuracy)
+                   +' · Macro-AUROC '+_pct(m.test_macro_auroc)+' · 黑色素瘤敏感度 '+_pct(m.test_melanoma_sensitivity)
+                   +(m.test_malignant_sensitivity_at_threshold!=null
+                     ? ' · 恶性风险筛查（'+(window._modelMeta.malignant_threshold<1 ? '阈值 '+_pct(window._modelMeta.malignant_threshold) : '仅按最高概率类别')+'）：恶性敏感度 '
+                       +_pct(m.test_malignant_sensitivity_at_threshold)+'，特异度 '+_pct(m.test_malignant_specificity_at_threshold)
+                       +'，黑色素瘤被标记 '+_pct(m.test_melanoma_flagged_at_threshold) : '')) : '';
+    setTimeout(function(){ el.style.opacity='0.35'; },6000);
+  }
   else { el.innerHTML='🟡 未加载模型，使用启发式备用'; el.title=window._modelError||''; }
 }
 
-async function loadSkinModel(){
-  if (typeof tf === 'undefined'){ window._modelError='tensorflow.js 未加载'; setModelStatus('fail'); return; }
-  setModelStatus('loading', 0);
-  try{
-    window._skinModel = await tf.loadLayersModel(SKIN_MODEL_URL, {
-      onProgress:function(f){ setModelStatus('loading', f); }
+// 页面上写死的模型名称 → 改成实际加载的模型（中/英/韩三语同步）
+function applyModelLabels(){
+  var label=_modelLabel(), re=/MobileNet·HAM10000/g, keys=['subtitle','model_sub','dz_sub'];
+  try {
+    ['zh','en','ko'].forEach(function(l){ keys.forEach(function(k){
+      if (I18N[l] && typeof I18N[l][k]==='string') I18N[l][k]=I18N[l][k].replace(re,label);
+    }); });
+    keys.forEach(function(k){
+      var t=I18N[_curLang()] && I18N[_curLang()][k];
+      if (t!==undefined) document.querySelectorAll('[data-i18n="'+k+'"]').forEach(function(el){ el.innerHTML=t; });
     });
-    // 预热，消除首次推理卡顿
-    tf.tidy(function(){ window._skinModel.predict(tf.zeros([1,224,224,3])).dataSync(); });
+  } catch(e){ console.warn('[SkinModel] 更新模型标签失败', e); }
+  ['st-model-name','cam-model-name'].forEach(function(id){
+    var el=document.getElementById(id); if(el) el.textContent=el.textContent.replace(re,label);
+  });
+}
+
+function _loadScript(src){
+  return new Promise(function(res,rej){
+    var s=document.createElement('script'); s.src=src; s.async=true;
+    s.onload=function(){res();}; s.onerror=function(){rej(new Error('脚本加载失败: '+src));};
+    document.head.appendChild(s);
+  });
+}
+
+async function _fetchWithProgress(url, onProgress){
+  var resp=await fetch(url);
+  if(!resp.ok) throw new Error('HTTP '+resp.status+' '+url);
+  var total=+resp.headers.get('Content-Length')||0;
+  if(!resp.body||!total){ var b=await resp.arrayBuffer(); onProgress&&onProgress(1); return b; }
+  var reader=resp.body.getReader(), chunks=[], got=0;
+  while(true){
+    var r=await reader.read(); if(r.done) break;
+    chunks.push(r.value); got+=r.value.length; onProgress&&onProgress(Math.min(.99, got/total));
+  }
+  var out=new Uint8Array(got), off=0;
+  chunks.forEach(function(c){ out.set(c,off); off+=c.length; });
+  return out.buffer;
+}
+
+async function _loadOnnxModel(meta){
+  if (typeof ort==='undefined') await _loadScript(ORT_BASE_URL+'ort.min.js');
+  ort.env.wasm.wasmPaths = ORT_BASE_URL;
+  ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency||1) : 1;
+  // ?v=导出时间：重新训练导出新模型后 URL 随之改变，浏览器不会继续用缓存里的旧模型
+  var ver = meta.exported_at ? '?v='+encodeURIComponent(meta.exported_at) : '';
+  var buf = await _fetchWithProgress(SKIN_MODEL_DIR+(meta.file||'skin_model.onnx')+ver,
+                                     function(f){ setModelStatus('loading', f); });
+  var sess = await ort.InferenceSession.create(buf, {executionProviders:['wasm'], graphOptimizationLevel:'all'});
+  // 模型类别顺序 → HAM_CLASSES 顺序（按名字对齐，防止顺序不一致）
+  var classMap = (meta.classes||[]).map(function(c){ return HAM_CLASSES.findIndex(function(h){ return h.ham===c; }); });
+  if (classMap.length!==HAM_CLASSES.length || classMap.some(function(i){ return i<0; }))
+    throw new Error('meta.json 的 classes 与 HAM_CLASSES 不一致: '+JSON.stringify(meta.classes));
+  var S = meta.img_size||224;
+  var M = { backend:'onnx', meta:meta, session:sess, classMap:classMap, S:S,
+            inputName:sess.inputNames[0], hasCam:sess.outputNames.indexOf('cam')>=0 };
+  var warm={}; warm[M.inputName]=new ort.Tensor('float32', new Float32Array(S*S*3), [1,S,S,3]);
+  await sess.run(warm);                                     // 预热，消除首次推理卡顿
+  return M;
+}
+
+async function _loadTfjsModel(){
+  if (typeof tf==='undefined') await _loadScript(TFJS_URL);
+  var model = await tf.loadLayersModel(SKIN_MODEL_DIR+'model.json', {
+    onProgress:function(f){ setModelStatus('loading', f); }
+  });
+  tf.tidy(function(){ model.predict(tf.zeros([1,224,224,3])).dataSync(); });
+  return { backend:'tfjs', model:model, S:224, hasCam:false };
+}
+
+async function loadSkinModel(){
+  setModelStatus('loading', 0);
+  var errs=[];
+  try {
+    var r = await fetch(SKIN_MODEL_DIR+'meta.json', {cache:'no-cache'});
+    if (!r.ok) throw new Error('meta.json HTTP '+r.status);
+    var meta = await r.json();
+    if (meta.format!=='onnx') throw new Error('meta.format 不是 onnx');
+    window._skinModel = await _loadOnnxModel(meta);
+    window._modelMeta = meta;
+  } catch(e1) {
+    errs.push('ONNX: '+((e1&&e1.message)||e1));
+    try { window._skinModel = await _loadTfjsModel(); }
+    catch(e2){ errs.push('TF.js: '+((e2&&e2.message)||e2)); window._skinModel=null; }
+  }
+  if (window._skinModel){
     window._modelReady = true;
     setModelStatus('ready');
-    console.log('[SkinModel] HAM10000 模型已就绪');
-  }catch(e){
-    window._modelError = (e && e.message) ? e.message : String(e);
+    applyModelLabels();
+    console.log('[SkinModel] 已就绪：'+window._skinModel.backend+' · '+_modelLabel(), errs.length?errs:'');
+  } else {
     window._modelReady = false;
+    window._modelError = errs.join(' | ');
     setModelStatus('fail');
-    console.warn('[SkinModel] 加载失败，自动回退启发式：', e);
+    console.warn('[SkinModel] 加载失败，自动回退 Claude API / 启发式：', window._modelError);
   }
 }
 
@@ -4060,42 +4160,130 @@ function _loadImg(src){
     i.onload=function(){res(i);}; i.onerror=rej; i.src=src; });
 }
 
-// 预处理 + TTA 多视图推理 → 返回 7 类平均概率数组
-async function predictProbs(imgEl, ttaN){
-  ttaN = ttaN || 5;
-  var t = tf.tidy(function(){
-    var base = tf.browser.fromPixels(imgEl).resizeBilinear([224,224]).toFloat()
-                 .sub(127.5).div(127.5);          // 归一化到 [-1,1]，与训练一致
-    var views=[base];
-    if(ttaN>=2) views.push(base.reverse(1));        // 水平翻转
-    if(ttaN>=3) views.push(base.reverse(0));        // 垂直翻转
-    if(ttaN>=4) views.push(base.mul(1.06).clipByValue(-1,1)); // 增亮
-    if(ttaN>=5) views.push(base.mul(0.94).clipByValue(-1,1)); // 变暗
-    var acc=null;
-    for(var i=0;i<views.length;i++){
-      var pr=window._skinModel.predict(views[i].expandDims(0));
-      acc = acc ? acc.add(pr) : pr;
+// 与 cropToLesion 相同的裁剪框（归一化坐标），无病灶框时用整张图
+function _lesionCropRect(img, bbox, pad){
+  if (!bbox) return {x:0,y:0,w:1,h:1};
+  var W=img.naturalWidth, H=img.naturalHeight;
+  var bw=bbox.w*W, bh=bbox.h*H, cx=(bbox.x+bbox.w/2)*W, cy=(bbox.y+bbox.h/2)*H;
+  var side=Math.max(bw,bh)*(1+pad*2);
+  side=Math.max(side, Math.min(W,H)*0.25);
+  var sx=Math.max(0,cx-side/2), sy=Math.max(0,cy-side/2);
+  var sw=Math.min(W-sx,side), sh=Math.min(H-sy,side);
+  return {x:sx/W, y:sy/H, w:sw/W, h:sh/H};
+}
+
+function _cropPixels(img, rect, S){
+  var W=img.naturalWidth, H=img.naturalHeight;
+  var c=document.createElement('canvas'); c.width=S; c.height=S;
+  var ctx=c.getContext('2d', {willReadFrequently:true});
+  ctx.imageSmoothingEnabled=true; ctx.imageSmoothingQuality='high';
+  ctx.drawImage(img, rect.x*W, rect.y*H, rect.w*W, rect.h*H, 0, 0, S, S);
+  return {canvas:c, data:ctx.getImageData(0,0,S,S).data};
+}
+
+// ONNX 推理：n 个 TTA 视图一次性批量推理 → 7 类平均概率（HAM 顺序）+ 原图视图的 CAM
+// 视图顺序与 train_skin.py 的 dihedral_nhwc 完全一致：
+// 0 原图 1 水平翻转 2 垂直翻转 3 旋转180 4 转置 5 转置+水平 6 转置+垂直 7 转置+双翻转
+async function _predictOnnx(img, rect, ttaN){
+  var M=window._skinModel, S=M.S, n=Math.max(1, Math.min(8, ttaN||1));
+  var px=_cropPixels(img, rect, S).data;
+  var buf=new Float32Array(n*S*S*3);
+  for (var v=0; v<n; v++){
+    var base=v*S*S*3;
+    for (var y=0; y<S; y++){
+      for (var x=0; x<S; x++){
+        var sy, sx;
+        switch(v){
+          case 0: sy=y;     sx=x;     break;
+          case 1: sy=y;     sx=S-1-x; break;
+          case 2: sy=S-1-y; sx=x;     break;
+          case 3: sy=S-1-y; sx=S-1-x; break;
+          case 4: sy=x;     sx=y;     break;
+          case 5: sy=S-1-x; sx=y;     break;
+          case 6: sy=x;     sx=S-1-y; break;
+          default: sy=S-1-x; sx=S-1-y;
+        }
+        var si=(sy*S+sx)*4, di=base+(y*S+x)*3;
+        buf[di]=px[si]; buf[di+1]=px[si+1]; buf[di+2]=px[si+2];
+      }
     }
+  }
+  if (window.SKINAI_DEBUG) window._lastModelInput={S:S, n:n, rgb:Array.from(buf.subarray(0,S*S*3))};
+  var feeds={}; feeds[M.inputName]=new ort.Tensor('float32', buf, [n,S,S,3]);
+  var out=await M.session.run(feeds);
+  var pr=out.probs.data, Kc=M.classMap.length, probs=new Array(HAM_CLASSES.length).fill(0);
+  for (var v2=0; v2<n; v2++) for (var j=0; j<Kc; j++) probs[M.classMap[j]] += pr[v2*Kc+j]/n;
+  var cam=null;
+  if (M.hasCam && out.cam){
+    var h=out.cam.dims[2], w=out.cam.dims[3], top=0;
+    for (var q=1; q<probs.length; q++) if (probs[q]>probs[top]) top=q;
+    var jm=M.classMap.indexOf(top);                     // 视图 0（原图）的 top 类 CAM
+    cam={h:h, w:w, data:Array.from(out.cam.data.subarray(jm*h*w, (jm+1)*h*w))};
+  }
+  return {probs:probs, cam:cam};
+}
+
+// 旧版 TF.js MobileNet 推理（[-1,1] 归一化，与其训练一致）
+async function _predictTfjs(img, rect, ttaN){
+  var M=window._skinModel, c=_cropPixels(img, rect, 224).canvas;
+  ttaN=ttaN||5;
+  var t=tf.tidy(function(){
+    var base=tf.browser.fromPixels(c).toFloat().sub(127.5).div(127.5);
+    var views=[base];
+    if(ttaN>=2) views.push(base.reverse(1));
+    if(ttaN>=3) views.push(base.reverse(0));
+    if(ttaN>=4) views.push(base.mul(1.06).clipByValue(-1,1));
+    if(ttaN>=5) views.push(base.mul(0.94).clipByValue(-1,1));
+    var acc=null;
+    for(var i=0;i<views.length;i++){ var pr=M.model.predict(views[i].expandDims(0)); acc=acc?acc.add(pr):pr; }
     return acc.div(views.length);
   });
-  var arr = await t.data(); t.dispose();
-  return Array.from(arr);
+  var arr=await t.data(); t.dispose();
+  return {probs:Array.from(arr), cam:null};
+}
+
+async function predictProbs(img, rect, ttaN){
+  return (window._skinModel && window._skinModel.backend==='onnx')
+    ? await _predictOnnx(img, rect, ttaN) : await _predictTfjs(img, rect, ttaN);
+}
+
+// 真实 CAM 热力图：画回原图上的裁剪区域
+function _jet(t){
+  var r=Math.min(1,Math.max(0,1.5-Math.abs(4*t-3))), g=Math.min(1,Math.max(0,1.5-Math.abs(4*t-2))),
+      b=Math.min(1,Math.max(0,1.5-Math.abs(4*t-1)));
+  return [Math.round(r*255), Math.round(g*255), Math.round(b*255)];
+}
+function drawRealCam(ctx, cam, W, H){
+  var h=cam.h, w=cam.w, d=cam.data, mx=0, i;
+  for (i=0;i<d.length;i++) if (d[i]>mx) mx=d[i];
+  var sc=document.createElement('canvas'); sc.width=w; sc.height=h;
+  var sctx=sc.getContext('2d'), id=sctx.createImageData(w,h);
+  for (i=0;i<h*w;i++){
+    var t=mx>0 ? Math.max(0,d[i])/mx : 0, c=_jet(t);
+    id.data[i*4]=c[0]; id.data[i*4+1]=c[1]; id.data[i*4+2]=c[2];
+    id.data[i*4+3]=t<0.15 ? 0 : Math.round(255*(0.2+0.55*t));
+  }
+  sctx.putImageData(id,0,0);
+  ctx.save(); ctx.imageSmoothingEnabled=true; ctx.imageSmoothingQuality='high';
+  ctx.drawImage(sc, 0,0,w,h, cam.rect.x*W, cam.rect.y*H, cam.rect.w*W, cam.rect.h*H);
+  ctx.restore();
 }
 
 // 主分类入口：返回与 simulate() 完全一致的结果对象（下游 UI/记录/方案/宣教全部兼容）
-async function classifyWithModel(enhancedDataUrl, lesionInfo, ttaN){
+// 传入原图（不要传增强后的图）：颜色恒常性已在模型内部完成，与训练时一致
+async function classifyWithModel(dataUrl, lesionInfo, ttaN){
   var region = (document.querySelector('input[name="reg"]:checked')||{}).value||'face';
   var spec = (document.getElementById('specMode')||{}).value||'rgb';
+  var img = await _loadImg(dataUrl);
   // 聚焦病灶裁剪后再分类（病灶占满画面 → 分类更准）
-  var cropUrl = enhancedDataUrl;
-  try { if(lesionInfo && lesionInfo.bbox) cropUrl = await cropToLesion(enhancedDataUrl, lesionInfo.bbox, 0.25); } catch(e){}
-  var img = await _loadImg(cropUrl);
-  var p = await predictProbs(img, ttaN||5);
+  var rect = _lesionCropRect(img, lesionInfo && lesionInfo.bbox, 0.25);
+  var res = await predictProbs(img, rect, ttaN||5);
+  var p = res.probs;
   var order = p.map(function(v,i){return {i:i,v:v};}).sort(function(a,b){return b.v-a.v;});
   var cls = HAM_CLASSES[order[0].i];
   var key = cls.key, conf = Math.max(0.05, Math.min(0.999, order[0].v));
   var dInfo = DISEASE_DB[key] || {color:'#ef4444', sev:cls.sev, cat:5};
-  var lang = (window.currentLang||'zh'), nameLoc = (cls[lang]||cls.zh);
+  var lang = _curLang(), nameLoc = (cls[lang]||cls.zh);
 
   // 面积 / EASI / 红斑 / 色素 评分：沿用像素特征量化（模型只负责"是什么"，定位与量化用启发式）
   var F = (lesionInfo && lesionInfo.features) ? lesionInfo.features : null;
@@ -4113,13 +4301,22 @@ async function classifyWithModel(enhancedDataUrl, lesionInfo, ttaN){
     return { key:c.key, name:(c[lang]||c.zh), confidence:o.v }; });
   var malignant = cls.malignant, sev = cls.sev;
   var margin = order[0].v - order[1].v;
-  var needReview = malignant || conf < 0.55 || margin < 0.15;
+  // 恶性风险评分 = P(akiec)+P(bcc)+P(mel)；阈值来自 meta.json（train_skin.py 在验证集上选定）
+  // 判定规则与论文报告一致：最可能类别是恶性，或 评分 ≥ 阈值 → 高风险/需复核
+  var malScore = 0;
+  HAM_CLASSES.forEach(function(c,i){ if (c.malignant) malScore += p[i]; });
+  var malThr = (window._modelMeta && typeof window._modelMeta.malignant_threshold==='number')
+               ? window._modelMeta.malignant_threshold : null;
+  var malFlag = malThr!==null && malThr < 1 && malScore >= malThr;
+  if (malFlag && !malignant && sev < 1) sev = 1;                // 良性类别但恶性风险高 → 至少"建议皮肤科评估"
+  var needReview = malignant || malFlag || conf < 0.55 || margin < 0.15;
+  var label = _modelLabel();
 
   return {
     diagnosis:'disease', conf:conf, color:dInfo.color||'#ef4444',
     diseaseKey:key, diseaseName:dInfo.name||nameLoc,
     severity:sev, sevDesc:['轻度：良性病变，定期随访','中度：建议皮肤科评估','重度：癌性/癌前可能，尽快活检确诊'][sev],
-    disDesc: nameLoc+'（HAM10000 模型判定）。',
+    disDesc: nameLoc+'（'+label+' 模型判定）。',
     category:dInfo.cat||5, area:'约'+Math.round(areaR*100)+'%',
     areaRatio:areaR, easiArea:easiA, erythemaIntensity:eryI,
     easiErythema:easiE, pigmentScore:pig, easiTotal:eT,
@@ -4128,12 +4325,19 @@ async function classifyWithModel(enhancedDataUrl, lesionInfo, ttaN){
     colorUniform: F ? ((F.multichrome>0.6)?'多色':'均匀') : '—',
     sceScore: conf,
     needReview: needReview,
-    risk: malignant ? 'high' : (sev>=2?'high':sev>=1?'moderate':'low'),
-    aiNote: 'MobileNet/HAM10000 模型判定为「'+nameLoc+'」，置信度 '+Math.round(conf*100)+'%。'
+    risk: (malignant || malFlag) ? 'high' : (sev>=2?'high':sev>=1?'moderate':'low'),
+    malignantScore: malScore, malignantThreshold: malThr, malignantFlag: malFlag,
+    aiNote: label+' 模型判定为「'+nameLoc+'」，置信度 '+Math.round(conf*100)+'%。'
       + (malignant ? ' ⚠️ 该类别属癌性/癌前病变，强烈建议尽快至皮肤科活检确诊。'
-                   : ' 建议由皮肤科医生结合临床进一步确认。'),
+         : malFlag ? ' ⚠️ 恶性风险评分 '+_pctShort(malScore)+'（达到筛查阈值 '+_pctShort(malThr)
+                     +'）：虽然最可能是良性的「'+nameLoc+'」，但不能排除黑色素瘤、基底细胞癌等恶性病变，建议尽快到皮肤科做皮肤镜检查。'
+         : ' 建议由皮肤科医生结合临床进一步确认。')
+      + (malThr!==null && malThr<1 && !malFlag && !malignant ? '（恶性风险评分 '+_pctShort(malScore)+'，低于筛查阈值 '+_pctShort(malThr)+'）' : ''),
     top3: top3, bboxes:[primaryBox],
-    gradcamInfo:'模型在裁剪后的病灶区域给出最高激活；病灶面积约 '+Math.round(areaR*100)+'%。',
+    cam: res.cam ? {h:res.cam.h, w:res.cam.w, data:res.cam.data, rect:rect} : null,
+    gradcamInfo: res.cam
+      ? 'Grad-CAM 热力图（真实模型输出）：红色区域对「'+nameLoc+'」判定贡献最大。本模型为全局平均池化+全连接结构，Grad-CAM 与 CAM 数学上等价，由最后一层卷积特征×分类权重直接得到。'
+      : '模型在裁剪后的病灶区域给出最高激活；病灶面积约 '+Math.round(areaR*100)+'%。',
     region:region, spectrum:spec, fromAI:true, fromModel:true
   };
 }
@@ -4158,7 +4362,7 @@ else loadSkinModel();
     <!-- 头部 -->
     <div id="cam-header">
       <h2>📹 SKIN<span>AI</span> 实时监测</h2>
-      <div style="font-size:11px;color:rgba(255,255,255,.5);margin-right:auto">MobileNet·HAM10000 · GradCAM · EASI评分</div>
+      <div style="font-size:11px;color:rgba(255,255,255,.5);margin-right:auto"><span id="cam-model-name">MobileNet·HAM10000</span> · GradCAM · EASI评分</div>
       <div id="cam-status-badge" style="font-size:11px;padding:4px 10px;background:rgba(255,255,255,.1);border-radius:12px;color:rgba(255,255,255,.7);margin-right:8px">未启动</div>
       <button class="cam-close" onclick="closeCamModal()">✕</button>
     </div>

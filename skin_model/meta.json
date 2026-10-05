@@ -1,0 +1,72 @@
+{
+  "format": "onnx",
+  "file": "skin_model.onnx",
+  "schema_version": 2,
+  "model_name": "efficientnet_b2.ra_in1k",
+  "display_name": "EfficientNet-B2 · HAM10000",
+  "classes": [
+    "akiec",
+    "bcc",
+    "bkl",
+    "df",
+    "mel",
+    "nv",
+    "vasc"
+  ],
+  "img_size": 288,
+  "input": {
+    "name": "image",
+    "layout": "NHWC",
+    "dtype": "float32",
+    "range": "RGB 0-255"
+  },
+  "outputs": [
+    "probs",
+    "cam"
+  ],
+  "cam": true,
+  "cam_size": [
+    9,
+    9
+  ],
+  "preprocess_in_graph": [
+    "shades_of_gray_p6",
+    "normalize"
+  ],
+  "tta_order": [
+    "identity",
+    "hflip",
+    "vflip",
+    "rot180",
+    "transpose",
+    "transpose+hflip",
+    "transpose+vflip",
+    "transpose+hvflip"
+  ],
+  "temperature": 0.77019864320755,
+  "onnx_size_mb": 30.8,
+  "exported_at": "2026-10-05T07:19:47+00:00",
+  "fold": 0,
+  "malignant_threshold": 0.1747620095508794,
+  "malignant_target_sensitivity": 0.9,
+  "n_train_images": 6839,
+  "metrics": {
+    "val_balanced_accuracy": 0.7787598492158411,
+    "test_n_images": 1441,
+    "test_tta": 5,
+    "test_accuracy": 0.8327550312283136,
+    "test_balanced_accuracy": 0.7342001916430443,
+    "test_balanced_accuracy_95ci": [
+      0.6808531613159158,
+      0.8026271721738953
+    ],
+    "test_macro_auroc": 0.9527289740428919,
+    "test_melanoma_sensitivity": 0.5753424657534246,
+    "test_malignant_auroc": 0.9277218112843676,
+    "test_ece": 0.04478454213548993,
+    "test_malignant_sensitivity_at_threshold": 0.8847583643122676,
+    "test_malignant_specificity_at_threshold": 0.810580204778157,
+    "test_melanoma_flagged_at_threshold": 0.815068493150685,
+    "test_flagged_fraction_at_threshold": 0.3192227619708536
+  }
+}
