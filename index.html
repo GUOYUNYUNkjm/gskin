@@ -4275,8 +4275,10 @@ async function classifyWithModel(dataUrl, lesionInfo, ttaN){
   var region = (document.querySelector('input[name="reg"]:checked')||{}).value||'face';
   var spec = (document.getElementById('specMode')||{}).value||'rgb';
   var img = await _loadImg(dataUrl);
-  // 聚焦病灶裁剪后再分类（病灶占满画面 → 分类更准）
-  var rect = _lesionCropRect(img, lesionInfo && lesionInfo.bbox, 0.25);
+  // 整张图送进模型：与 train_skin.py 评估测试集时完全相同（整图缩放到 img_size），
+  // 论文报告的准确率就是在这种输入下得到的。启发式病灶框只用于页面标注和面积/EASI 量化，
+  // 不再用来裁剪——它经常框到阴影或正常皮肤，裁剪后模型看到的是错误区域。
+  var rect = {x:0, y:0, w:1, h:1};
   var res = await predictProbs(img, rect, ttaN||5);
   var p = res.probs;
   var order = p.map(function(v,i){return {i:i,v:v};}).sort(function(a,b){return b.v-a.v;});
@@ -4332,12 +4334,16 @@ async function classifyWithModel(dataUrl, lesionInfo, ttaN){
          : malFlag ? ' ⚠️ 恶性风险评分 '+_pctShort(malScore)+'（达到筛查阈值 '+_pctShort(malThr)
                      +'）：虽然最可能是良性的「'+nameLoc+'」，但不能排除黑色素瘤、基底细胞癌等恶性病变，建议尽快到皮肤科做皮肤镜检查。'
          : ' 建议由皮肤科医生结合临床进一步确认。')
-      + (malThr!==null && malThr<1 && !malFlag && !malignant ? '（恶性风险评分 '+_pctShort(malScore)+'，低于筛查阈值 '+_pctShort(malThr)+'）' : ''),
+      + (malThr!==null && malThr<1 && !malFlag && !malignant ? '（恶性风险评分 '+_pctShort(malScore)+'，低于筛查阈值 '+_pctShort(malThr)+'）' : '')
+      // 适用范围始终提示：模型只在 7 类病变上训练，对范围外的照片（如湿疹、痤疮）也会硬选一个类别，且可能置信度很高
+      + ' ℹ️ '+((conf < 0.6 || margin < 0.15) ? '模型把握不大。' : '')
+      + '适用范围：本模型只识别 7 类色素性/肿瘤性病变（色素痣、黑色素瘤、基底细胞癌、光化性角化病/原位癌、良性角化病、皮肤纤维瘤、血管性病变），'
+      + '湿疹、痤疮、皮炎、银屑病、感染等其他皮肤病不在识别范围内，这类照片的分类结果不可信。',
     top3: top3, bboxes:[primaryBox],
     cam: res.cam ? {h:res.cam.h, w:res.cam.w, data:res.cam.data, rect:rect} : null,
     gradcamInfo: res.cam
       ? 'Grad-CAM 热力图（真实模型输出）：红色区域对「'+nameLoc+'」判定贡献最大。本模型为全局平均池化+全连接结构，Grad-CAM 与 CAM 数学上等价，由最后一层卷积特征×分类权重直接得到。'
-      : '模型在裁剪后的病灶区域给出最高激活；病灶面积约 '+Math.round(areaR*100)+'%。',
+      : '模型对整张图像分类；病灶面积约 '+Math.round(areaR*100)+'%。',
     region:region, spectrum:spec, fromAI:true, fromModel:true
   };
 }
