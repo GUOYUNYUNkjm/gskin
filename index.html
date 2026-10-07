@@ -4069,7 +4069,9 @@ function setModelStatus(state, pct){
                        +_pct(m.test_malignant_sensitivity_at_threshold)+'，特异度 '+_pct(m.test_malignant_specificity_at_threshold)
                        +'，黑色素瘤被标记 '+_pct(m.test_melanoma_flagged_at_threshold) : '')
                    +(m.pad_test_balanced_accuracy!=null ? ' · 手机照片（PAD-UFES-20 测试集）平衡准确率 '+_pct(m.pad_test_balanced_accuracy) : '')
-                   +(m.scin_test_rejection_rate!=null ? ' · 范围外照片（SCIN 测试集）正确拒识 '+_pct(m.scin_test_rejection_rate) : '')) : '';
+                   +(m.scin_test_rejection_rate!=null ? ' · 范围外照片（SCIN 测试集）正确拒识 '+_pct(m.scin_test_rejection_rate) : '')
+                   +(m.ddi_malignant_auroc!=null ? ' · 外部测试 DDI（斯坦福临床照片，全部病理确诊，未参与训练）恶性 AUROC '+_pct(m.ddi_malignant_auroc)
+                       +'（浅色皮肤 '+_pct(m.ddi_malignant_auroc_fst12)+'，深色皮肤 '+_pct(m.ddi_malignant_auroc_fst56)+'）' : '')) : '';
     setTimeout(function(){ el.style.opacity='0.35'; },6000);
   }
   else { el.innerHTML='🟡 未加载模型，使用启发式备用'; el.title=window._modelError||''; }
@@ -4301,8 +4303,23 @@ async function classifyWithModel(dataUrl, lesionInfo, ttaN){
   var res = await predictProbs(img, rect, ttaN||5);
   var p = res.probs, C = _activeClasses(), hasOther = _hasOther();
   var order = p.map(function(v,i){return {i:i,v:v};}).sort(function(a,b){return b.v-a.v;});
-  var cls = C[order[0].i], isOther = !!cls.other;           // isOther：v2 模型判为"不在识别范围"
-  var key = cls.key, conf = Math.max(0.05, Math.min(0.999, order[0].v));
+  // "不在识别范围"分三档（v3 模型的 meta.json 带 reject_threshold：验证集上目标病变被误拒 ≤1% 的 P(other) 阈值）：
+  //   P(other) ≥ 阈值                → 不在识别范围（不给病变分类）
+  //   other 概率最高但没到阈值        → 给出 7 类中最接近的类别，同时提示照片可能不在范围、建议皮肤科评估（不会显示成低风险）
+  //   其余                           → 正常分类
+  // 只用阈值、不要中间档时，DDI 上被当作良性且没有任何提醒的恶性病例从 2.3% 升到 12.9%（蕈样肉芽肿等范围外恶性病变），所以保留中间档。
+  // 没有 reject_threshold 的旧模型：other 概率最高即"不在识别范围"（与以前相同）
+  var rejThr = (window._modelMeta && typeof window._modelMeta.reject_threshold==='number') ? window._modelMeta.reject_threshold : null;
+  var pOther = 0;
+  C.forEach(function(c,i){ if (c.other) pOther = p[i]; });
+  var topIsOther = !!C[order[0].i].other;
+  var isOther = topIsOther && (rejThr===null || pOther >= rejThr);   // isOther：判为"不在识别范围"
+  var scopeUncertain = topIsOther && !isOther;                       // 可能不在范围：给最接近的类别 + 提醒
+  var pick = order[0];
+  if (scopeUncertain){ for (var q0=0; q0<order.length; q0++) if (!C[order[q0].i].other){ pick = order[q0]; break; } }
+  var cls = C[pick.i];
+  // 可能不在范围时，置信度用 7 类内的条件概率 P(类别)/(1−P(other))
+  var key = cls.key, conf = Math.max(0.05, Math.min(0.999, scopeUncertain ? pick.v/Math.max(1e-6, 1-pOther) : pick.v));
   var dInfo = isOther ? {color:'#64748b', sev:1, cat:6} : (DISEASE_DB[key] || {color:'#ef4444', sev:cls.sev, cat:5});
   var lang = _curLang(), nameLoc = (cls[lang]||cls.zh);
 
@@ -4330,7 +4347,8 @@ async function classifyWithModel(dataUrl, lesionInfo, ttaN){
                ? window._modelMeta.malignant_threshold : null;
   var malFlag = malThr!==null && malThr < 1 && malScore >= malThr;
   if (malFlag && !malignant && sev < 1) sev = 1;                // 良性类别但恶性风险高 → 至少"建议皮肤科评估"
-  var needReview = isOther || malignant || malFlag || conf < 0.55 || margin < 0.15;
+  if (scopeUncertain && sev < 1) sev = 1;                       // 可能不在识别范围 → 至少"建议皮肤科评估"，不显示成低风险
+  var needReview = isOther || scopeUncertain || malignant || malFlag || conf < 0.55 || margin < 0.15;
   var label = _modelLabel();
   var lowConf = conf < 0.6 || margin < 0.15;
   var scopeTypes = '（色素痣、黑色素瘤、基底细胞癌、'+(C[0].zh)+'、良性角化病、皮肤纤维瘤、血管性病变）';
@@ -4344,6 +4362,15 @@ async function classifyWithModel(dataUrl, lesionInfo, ttaN){
                    +'），不能排除黑色素瘤、基底细胞癌等恶性病变，建议尽快到皮肤科检查。'
                  : (malThr!==null && malThr<1 ? '（恶性风险评分 '+_pctShort(malScore)+'，低于筛查阈值 '+_pctShort(malThr)+'）' : ''))
       + (bt ? ' 在 7 类病变中最接近「'+(C[bt.i][lang]||C[bt.i].zh)+'」（'+Math.round(bt.v*100)+'%），仅供参考。' : '');
+  } else if (scopeUncertain) {
+    aiNote = label+' 认为这张照片可能不属于它能识别的 7 类病变（「不在识别范围」概率 '+Math.round(pOther*100)
+      + '%，未达到判定阈值 '+Math.round(rejThr*100)+'%），因此给出 7 类中最接近的「'+nameLoc+'」（7 类内概率 '+Math.round(conf*100)+'%），仅供参考。'
+      + (malignant ? ' ⚠️ 该类别属癌性/癌前病变，建议尽快到皮肤科检查。'
+         : malFlag ? ' ⚠️ 恶性风险评分 '+_pctShort(malScore)+'（达到筛查阈值 '+_pctShort(malThr)
+                     +'），不能排除黑色素瘤、基底细胞癌等恶性病变，建议尽快到皮肤科检查。'
+         : (malThr!==null && malThr<1 ? '（恶性风险评分 '+_pctShort(malScore)+'，低于筛查阈值 '+_pctShort(malThr)+'）' : ''))
+      + ' 照片不典型（拍摄距离、角度、光线）或本身是湿疹、皮炎等其他皮肤病时，模型容易出错，建议咨询皮肤科医生；'
+      + '也可以换一张对焦清晰、病变居中的近照再试。';
   } else {
     aiNote = label+' 模型判定为「'+nameLoc+'」，置信度 '+Math.round(conf*100)+'%。'
       + (malignant ? ' ⚠️ 该类别属癌性/癌前病变，强烈建议尽快至皮肤科活检确诊。'
@@ -4365,8 +4392,10 @@ async function classifyWithModel(dataUrl, lesionInfo, ttaN){
     diseaseKey:key, diseaseName:(cls.renamed ? cls.zh : dInfo.name)||nameLoc,
     severity:sev,
     sevDesc: isOther ? '不在本模型识别范围：建议皮肤科评估'
+           : (scopeUncertain && sev < 2) ? '中度：照片可能不在识别范围，建议皮肤科评估'
                      : ['轻度：良性病变，定期随访','中度：建议皮肤科评估','重度：癌性/癌前可能，尽快活检确诊'][sev],
     disDesc: isOther ? '不在 '+label+' 的识别范围内（可能是湿疹、皮炎等其他皮肤问题）。'
+           : scopeUncertain ? nameLoc+'（'+label+' 模型：照片可能不在识别范围，这是 7 类中最接近的类别，仅供参考）。'
                      : nameLoc+'（'+label+' 模型判定）。',
     category:dInfo.cat||5, area:'约'+Math.round(areaR*100)+'%',
     areaRatio:areaR, easiArea:easiA, erythemaIntensity:eryI,
@@ -4378,6 +4407,7 @@ async function classifyWithModel(dataUrl, lesionInfo, ttaN){
     needReview: needReview,
     risk: (malignant || malFlag) ? 'high' : (sev>=2?'high':sev>=1?'moderate':'low'),
     malignantScore: malScore, malignantThreshold: malThr, malignantFlag: malFlag, outOfScope: isOther,
+    scopeUncertain: scopeUncertain, pOther: pOther, rejectThreshold: rejThr,
     aiNote: aiNote,
     top3: top3, bboxes:[primaryBox],
     cam: res.cam ? {h:res.cam.h, w:res.cam.w, data:res.cam.data, rect:rect} : null,
