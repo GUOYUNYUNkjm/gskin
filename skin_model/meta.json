@@ -3,7 +3,8 @@
   "file": "skin_model.onnx",
   "schema_version": 2,
   "model_name": "efficientnet_b2.ra_in1k",
-  "display_name": "EfficientNet-B2 · HAM10000",
+  "display_name": "EfficientNet-B2 · HAM+ISIC19+PAD+FITZ+MILK",
+  "n_classes": 8,
   "classes": [
     "akiec",
     "bcc",
@@ -11,7 +12,8 @@
     "df",
     "mel",
     "nv",
-    "vasc"
+    "vasc",
+    "other"
   ],
   "img_size": 288,
   "input": {
@@ -43,30 +45,88 @@
     "transpose+vflip",
     "transpose+hvflip"
   ],
-  "temperature": 0.77019864320755,
+  "temperature": 0.8428820371627808,
   "onnx_size_mb": 30.8,
-  "exported_at": "2026-10-05T07:19:47+00:00",
-  "fold": 0,
-  "malignant_threshold": 0.1747620095508794,
+  "exported_at": "2026-10-06T10:36:39+00:00",
+  "fold": 1,
+  "has_other": true,
+  "sources": [
+    "fitz",
+    "ham",
+    "isic2019",
+    "milk",
+    "pad"
+  ],
+  "scc_in_akiec": true,
+  "malignant_threshold": 0.12507142230727067,
   "malignant_target_sensitivity": 0.9,
-  "n_train_images": 6839,
+  "n_train_images": 33325,
   "metrics": {
-    "val_balanced_accuracy": 0.7787598492158411,
+    "val_balanced_accuracy": 0.7701528008999468,
     "test_n_images": 1441,
     "test_tta": 5,
-    "test_accuracy": 0.8327550312283136,
-    "test_balanced_accuracy": 0.7342001916430443,
+    "test_accuracy": 0.8695350451075642,
+    "test_balanced_accuracy": 0.7771868727061241,
     "test_balanced_accuracy_95ci": [
-      0.6808531613159158,
-      0.8026271721738953
+      0.7364133842176388,
+      0.814501748816138
     ],
-    "test_macro_auroc": 0.9527289740428919,
-    "test_melanoma_sensitivity": 0.5753424657534246,
-    "test_malignant_auroc": 0.9277218112843676,
-    "test_ece": 0.04478454213548993,
-    "test_malignant_sensitivity_at_threshold": 0.8847583643122676,
-    "test_malignant_specificity_at_threshold": 0.810580204778157,
-    "test_melanoma_flagged_at_threshold": 0.815068493150685,
-    "test_flagged_fraction_at_threshold": 0.3192227619708536
+    "test_macro_auroc": 0.9696359181687032,
+    "test_melanoma_sensitivity": 0.6164383561643836,
+    "test_malignant_auroc": 0.9387695547914789,
+    "test_ece": 0.035133019465028975,
+    "test_malignant_sensitivity_at_threshold": 0.9070631970260223,
+    "test_malignant_specificity_at_threshold": 0.8165529010238908,
+    "test_melanoma_flagged_at_threshold": 0.8493150684931506,
+    "test_flagged_fraction_at_threshold": 0.31852879944483,
+    "test_false_rejection_rate": 0.0,
+    "pad_test_balanced_accuracy": 0.7563383406265605,
+    "pad_test_melanoma_sensitivity": 0.75,
+    "pad_test_false_rejection_rate": 0.008928571428571428,
+    "pad_test_malignant_sensitivity_at_threshold": 0.9971098265895953,
+    "pad_test_malignant_specificity_at_threshold": 0.6862745098039216,
+    "scin_test_n_images": 6197,
+    "scin_test_rejection_rate": 0.9635307406809747,
+    "scin_test_flagged_fraction_at_threshold": 0.12699693400032275,
+    "scin_lesion_false_rejection_rate": 0.8,
+    "scin_other_auroc": 0.7341263437761744,
+    "milk_test_balanced_accuracy": 0.5649182079875139,
+    "milk_test_malignant_auroc": 0.8799882371530399,
+    "milk_test_false_rejection_rate": 0.013618677042801557,
+    "milk_test_rejection_rate": 0.2222222222222222,
+    "fitz_test_balanced_accuracy": 0.6202310207910045,
+    "fitz_test_malignant_auroc": 0.9486982657081353,
+    "fitz_test_false_rejection_rate": 0.2907608695652174,
+    "fitz_test_rejection_rate": 0.9827160493827161,
+    "ddi_n_images": 656,
+    "ddi_malignant_auroc": 0.6582624947247845,
+    "ddi_malignant_auroc_95ci": [
+      0.6092882910244058,
+      0.7084558097729143
+    ],
+    "ddi_malignant_auroc_fst12": 0.6420228468745989,
+    "ddi_malignant_auroc_fst34": 0.7623401844958732,
+    "ddi_malignant_auroc_fst56": 0.5452044025157232,
+    "ddi_malignant_sensitivity_at_threshold": 0.7660818713450293,
+    "ddi_malignant_specificity_at_threshold": 0.4247422680412371,
+    "ddi_malignant_missed": 0.023391812865497075
+  },
+  "scin_mode": "external",
+  "thr_sources": [
+    "ham",
+    "pad",
+    "milk"
+  ],
+  "test_only_sources": [
+    "scin",
+    "scin_lesion"
+  ],
+  "reject_threshold": 0.905,
+  "reject_rule": "三档：P(other) ≥ reject_threshold → 不在识别范围；other 概率最高但低于阈值 → 给出 7 类中最接近的类别并提示可能不在范围、建议皮肤科评估；其余正常分类。阈值 = 部署折（fold 1）验证集上目标病变被误拒 ≤1% 的最小 P(other)（与 combine_runs.py 的规则相同）",
+  "reject_threshold_val": {
+    "fold": 1,
+    "target_false_rejection": 0.009,
+    "other_rejection": 0.832,
+    "max_false_reject": 0.01
   }
 }
