@@ -4069,7 +4069,9 @@ function setModelStatus(state, pct){
                        +_pct(m.test_malignant_sensitivity_at_threshold)+'，特异度 '+_pct(m.test_malignant_specificity_at_threshold)
                        +'，黑色素瘤被标记 '+_pct(m.test_melanoma_flagged_at_threshold) : '')
                    +(m.pad_test_balanced_accuracy!=null ? ' · 手机照片（PAD-UFES-20 测试集）平衡准确率 '+_pct(m.pad_test_balanced_accuracy) : '')
-                   +(m.scin_test_rejection_rate!=null ? ' · 范围外照片（SCIN 测试集）正确拒识 '+_pct(m.scin_test_rejection_rate) : '')
+                   +(m.scin_test_rejection_rate!=null ? ' · 范围外照片（SCIN 测试集）'
+                       +(typeof window._modelMeta.reject_threshold==='number' ? '被判为不在范围或提示可能不在范围 ' : '正确拒识 ')
+                       +_pct(m.scin_test_rejection_rate) : '')
                    +(m.ddi_malignant_auroc!=null ? ' · 外部测试 DDI（斯坦福临床照片，全部病理确诊，未参与训练）恶性 AUROC '+_pct(m.ddi_malignant_auroc)
                        +'（浅色皮肤 '+_pct(m.ddi_malignant_auroc_fst12)+'，深色皮肤 '+_pct(m.ddi_malignant_auroc_fst56)+'）' : '')) : '';
     setTimeout(function(){ el.style.opacity='0.35'; },6000);
